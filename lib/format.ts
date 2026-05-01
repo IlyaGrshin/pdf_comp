@@ -4,16 +4,22 @@ const GB = MB * 1024;
 
 export function formatBytes(bytes: number): string {
   if (bytes < KB) return `${bytes} Б`;
-  if (bytes < MB) return `${(bytes / KB).toFixed(1)} КБ`;
-  if (bytes < GB) return `${(bytes / MB).toFixed(1)} МБ`;
-  return `${(bytes / GB).toFixed(2)} ГБ`;
+  if (bytes < MB) return `${trim(bytes / KB)} КБ`;
+  if (bytes < GB) return `${trim(bytes / MB)} МБ`;
+  return `${trim(bytes / GB, 2)} ГБ`;
 }
 
 export function formatRatio(ratio: number): string {
-  return `${(ratio * 100).toFixed(1)}%`;
+  return `${trim(ratio * 100)}%`;
 }
 
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms} мс`;
-  return `${(ms / 1000).toFixed(1)} сек`;
+  return `${trim(ms / 1000)} сек`;
+}
+
+// Round to `decimals` places (default 1) and drop the trailing ".0".
+function trim(n: number, decimals = 1): string {
+  const rounded = Math.round(n * 10 ** decimals) / 10 ** decimals;
+  return Number.isInteger(rounded) ? rounded.toString() : rounded.toFixed(decimals);
 }
