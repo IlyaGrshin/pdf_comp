@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Mounted under /pdf_comp on the host. Must stay in sync with
+  // `BASE_PATH` in lib/config.ts and the Caddy path matchers.
+  basePath: "/pdf_comp",
   output: "standalone",
   experimental: {
     serverActions: {

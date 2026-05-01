@@ -11,6 +11,7 @@ import { createJob, deleteJob, startSweeper } from "@/lib/job-fs";
 import { validatePdf } from "@/lib/validate-pdf";
 import type { ErrorCode } from "@/lib/errors";
 import { LIMITS, availableMemory, MEMORY_PRESSURE_FLOOR } from "@/lib/runtime-limits";
+import { BASE_PATH } from "@/lib/config";
 
 export const runtime = "nodejs";
 export const maxDuration = 900;
@@ -99,7 +100,7 @@ export async function POST(req: Request) {
       ratio: result.ratio,
       noBenefit: result.noBenefit,
       durationMs: result.durationMs,
-      downloadUrl: `/api/download/${job.id}`,
+      downloadUrl: `${BASE_PATH}/api/download/${job.id}`,
     });
   } catch (e) {
     await deleteJob(job.dir).catch(() => undefined);

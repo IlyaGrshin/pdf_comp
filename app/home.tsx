@@ -8,6 +8,7 @@ import { ErrorBanner } from "@/components/error-banner";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { DEFAULT_PRESET } from "@/lib/presets";
 import { ERROR_CODES, type ErrorCode } from "@/lib/errors";
+import { BASE_PATH } from "@/lib/config";
 
 type State =
   | { kind: "idle" }
@@ -38,7 +39,7 @@ export function Home({ maxBytes }: Props) {
 
     const xhr = new XMLHttpRequest();
     xhrRef.current = xhr;
-    xhr.open("POST", "/api/compress");
+    xhr.open("POST", `${BASE_PATH}/api/compress`);
     xhr.responseType = "json";
 
     setState({ kind: "uploading", progress: 0 });
