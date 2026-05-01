@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2 } from "lucide-react";
+import { Loader2, Lock, Shield, Zap } from "lucide-react";
 import { Uploader } from "@/components/uploader";
 import { ResultCard, type CompressResponse } from "@/components/result-card";
 import { ErrorBanner } from "@/components/error-banner";
@@ -83,15 +83,28 @@ export function Home({ maxBytes }: Props) {
     <div className="relative isolate flex min-h-screen flex-col">
       <Backdrop />
       <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-5 py-12">
-        <header className="mb-6 space-y-2">
+        <header className="mb-5 space-y-2">
           <h1 className="font-heading text-2xl font-semibold tracking-tight">
             Сжатие PDF
           </h1>
           <p className="text-sm text-muted-foreground">
-            Для дизайнерских PDF из&nbsp;Figma. Сохраняем векторы, прозрачности
-            и&nbsp;эффекты, обычно сжимаем в&nbsp;10–30&nbsp;раз.
+            Сжимаем любые PDF без&nbsp;потери качества — векторы, прозрачности
+            и&nbsp;эффекты Figma остаются нетронутыми.
           </p>
         </header>
+
+        <ul className="mb-6 grid gap-2 text-xs">
+          <Bullet icon={Lock} title="Приватно">
+            Не&nbsp;читаем содержимое; файлы удаляются после скачивания
+            или через&nbsp;10&nbsp;минут.
+          </Bullet>
+          <Bullet icon={Shield} title="Безопасно">
+            Без аналитики, без логов содержимого, без передачи третьим лицам.
+          </Bullet>
+          <Bullet icon={Zap} title="Эффективно">
+            Обычно в&nbsp;10–30&nbsp;раз компактнее, плотнее чем iLovePDF.
+          </Bullet>
+        </ul>
 
         <section className="rounded-2xl border bg-card p-4 shadow-sm ring-1 ring-foreground/5 sm:p-5">
           {state.kind === "done" ? (
@@ -112,12 +125,6 @@ export function Home({ maxBytes }: Props) {
             />
           )}
         </section>
-
-        <footer className="mt-6 text-xs text-muted-foreground/80">
-          <p>
-            Файлы хранятся на&nbsp;сервере не&nbsp;дольше 10&nbsp;минут и&nbsp;удаляются после скачивания.
-          </p>
-        </footer>
       </main>
     </div>
   );
@@ -194,6 +201,26 @@ function ProcessingBlock({ startedAt }: { startedAt: number }) {
         <div className="h-full w-1/3 rounded-full bg-primary animate-[indeterminate_1.4s_ease-in-out_infinite]" />
       </div>
     </div>
+  );
+}
+
+function Bullet({
+  icon: Icon,
+  title,
+  children,
+}: {
+  icon: typeof Lock;
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <li className="flex items-start gap-2.5">
+      <Icon className="mt-0.5 size-3.5 shrink-0 text-primary/70" />
+      <p className="leading-relaxed">
+        <span className="font-medium text-foreground">{title}.</span>{" "}
+        <span className="text-muted-foreground">{children}</span>
+      </p>
+    </li>
   );
 }
 
