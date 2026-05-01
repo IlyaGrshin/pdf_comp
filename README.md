@@ -1,36 +1,71 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# pdf-comp
 
-## Getting Started
+PDF compression service. Designed for Figma exports but works on any PDF —
+the pipeline preserves vectors, transparency groups, blend modes and fonts;
+only image streams are recompressed and identical streams are deduplicated
+across pages. Compressed files are delivered through your existing reverse
+proxy without the service ever reading content into application logs or
+persisting beyond the download window.
 
-First, run the development server:
+Built around [pikepdf](https://pikepdf.readthedocs.io/) (the same library
+[OCRmyPDF](https://ocrmypdf.readthedocs.io/) uses internally) plus
+[mozjpeg](https://github.com/mozilla/mozjpeg). Mounts at `/pdf_comp` by
+default so it can sit alongside an existing site at the apex of the same
+domain.
+
+## Deploy
+
+On a fresh Linux VPS that already runs nginx (or another reverse proxy):
 
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone https://github.com/<you>/pdf-comp.git
+cd pdf-comp
+sudo ./scripts/setup.sh
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The script sets up a 2 GB swap file, installs Docker if missing, builds the
+image, and starts the app on `127.0.0.1:3127`. It prints an nginx
+`location /pdf_comp/ { ... }` block at the end — paste it into the
+appropriate `server { ... }` block on the host and `systemctl reload nginx`.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Updates later:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+git pull && sudo docker compose up -d --build
+```
 
-## Learn More
+### Alternative: rsync from local (no GitHub)
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+./scripts/deploy.sh root@your-vps
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+This rsyncs the project from your laptop to `/opt/pdf-comp` on the VPS
+and runs the same bootstrap remotely. Useful if you'd rather not publish
+the code or set up a deploy key on the VPS.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Local dev
 
-## Deploy on Vercel
+```bash
+brew install ghostscript qpdf mozjpeg pnpm
+python3 -m venv --copies .venv
+.venv/bin/pip install -r scripts/requirements.txt
+pnpm install
+pnpm dev   # http://localhost:3000/pdf_comp/
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The `--copies` flag on `python3 -m venv` is important — Turbopack rejects
+symlinks that point outside the project root, and the default venv layout
+on macOS uses a symlink to the Homebrew Python install.
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+## Architecture, conventions, gotchas
+
+See [AGENTS.md](./AGENTS.md) for the pipeline diagram, critical invariants
+(four things that took dozens of iterations to nail down), the auto-tuning
+table, and the privacy/security guarantees that the landing copy promises.
+
+## License
+
+Personal project, no license declared. Don't redistribute the binary or
+copy the brand. Ideas, code patterns and the pikepdf integration are free
+for inspiration.
