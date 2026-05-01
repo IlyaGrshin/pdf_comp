@@ -77,6 +77,19 @@ location /pdf_comp/ {
     proxy_send_timeout 600s;
 }
 
+Optional but recommended — per-IP rate limit. Add this OUTSIDE any server { … }
+block (e.g. in /etc/nginx/conf.d/pdf_comp-ratelimit.conf or near the top of
+the existing site config):
+
+    limit_req_zone \$binary_remote_addr zone=pdf_comp:10m rate=20r/m;
+
+…then inside the location block above:
+
+    limit_req zone=pdf_comp burst=10 nodelay;
+
+This caps each client IP at ~20 compressions/min with a burst of 10.
+Without it, a single misbehaving client can saturate your VPS RAM.
+
 Reload:    nginx -t && systemctl reload nginx
 Open:      https://<your-domain>/pdf_comp/
 
