@@ -39,3 +39,12 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# project-local job storage and test fixtures
+/tmp/
+/test-pdfs/
+
+# Python venv used by scripts/recompress.py
+/.venv/
+__pycache__/
+*.pyc

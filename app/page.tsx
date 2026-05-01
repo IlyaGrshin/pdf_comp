@@ -1,65 +1,217 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useEffect, useRef, useState } from "react";
+import { Loader2 } from "lucide-react";
+import { Uploader } from "@/components/uploader";
+import { ResultCard, type CompressResponse } from "@/components/result-card";
+import { ErrorBanner } from "@/components/error-banner";
+import { Button } from "@/components/ui/button";
+import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
+import { DEFAULT_PRESET } from "@/lib/presets";
+import { ERROR_CODES, type ErrorCode } from "@/lib/errors";
+
+type State =
+  | { kind: "idle" }
+  | { kind: "uploading"; progress: number }
+  | { kind: "processing"; startedAt: number }
+  | { kind: "done"; result: CompressResponse }
+  | { kind: "error"; code: ErrorCode };
+
+export default function Page() {
+  const [file, setFile] = useState<File | null>(null);
+  const [state, setState] = useState<State>({ kind: "idle" });
+  const xhrRef = useRef<XMLHttpRequest | null>(null);
+
+  useEffect(() => {
+    return () => {
+      xhrRef.current?.abort();
+    };
+  }, []);
+
+  const isBusy = state.kind === "uploading" || state.kind === "processing";
+
+  const submit = () => {
+    if (!file || isBusy) return;
+    const fd = new FormData();
+    fd.append("file", file);
+    fd.append("preset", DEFAULT_PRESET);
+
+    const xhr = new XMLHttpRequest();
+    xhrRef.current = xhr;
+    xhr.open("POST", "/api/compress");
+    xhr.responseType = "json";
+
+    setState({ kind: "uploading", progress: 0 });
+
+    xhr.upload.onprogress = (evt) => {
+      if (evt.lengthComputable) {
+        setState({ kind: "uploading", progress: evt.loaded / evt.total });
+      }
+    };
+    xhr.upload.onload = () => {
+      setState({ kind: "processing", startedAt: Date.now() });
+    };
+    xhr.onerror = () => {
+      setState({ kind: "error", code: "NETWORK" });
+    };
+    xhr.onload = () => {
+      const body = xhr.response as { error?: string } & Partial<CompressResponse>;
+      if (xhr.status >= 200 && xhr.status < 300 && body && body.jobId) {
+        setState({ kind: "done", result: body as CompressResponse });
+      } else {
+        const code = body?.error;
+        const known = code && ERROR_CODES.has(code as ErrorCode) ? (code as ErrorCode) : "INTERNAL";
+        setState({ kind: "error", code: known });
+      }
+    };
+    xhr.send(fd);
+  };
+
+  const reset = () => {
+    xhrRef.current?.abort();
+    xhrRef.current = null;
+    setFile(null);
+    setState({ kind: "idle" });
+  };
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
+    <div className="relative isolate flex min-h-screen flex-col">
+      <Backdrop />
+      <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-5 py-12">
+        <header className="mb-6 space-y-2">
+          <h1 className="font-heading text-2xl font-semibold tracking-tight">
+            Сжатие PDF
           </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+          <p className="text-sm text-muted-foreground">
+            Для дизайнерских PDF из&nbsp;Figma. Сохраняем векторы, прозрачности
+            и&nbsp;эффекты, обычно сжимаем в&nbsp;10–30&nbsp;раз.
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+        </header>
+
+        <section className="rounded-2xl border bg-card p-4 shadow-sm ring-1 ring-foreground/5 sm:p-5">
+          {state.kind === "done" ? (
+            <ResultCard
+              result={state.result}
+              fileName={file?.name ?? "document.pdf"}
+              onReset={reset}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
+          ) : state.kind === "error" ? (
+            <ErrorBanner code={state.code} onRetry={reset} />
+          ) : (
+            <ActiveForm
+              file={file}
+              state={state}
+              onFileChange={setFile}
+              onSubmit={submit}
+              onError={(code) => setState({ kind: "error", code })}
+            />
+          )}
+        </section>
+
+        <footer className="mt-6 text-xs text-muted-foreground/80">
+          <p>
+            Файлы хранятся на&nbsp;сервере не&nbsp;дольше 10&nbsp;минут и&nbsp;удаляются после скачивания.
+          </p>
+        </footer>
       </main>
     </div>
+  );
+}
+
+type ActiveFormProps = {
+  file: File | null;
+  state: Extract<State, { kind: "idle" } | { kind: "uploading" } | { kind: "processing" }>;
+  onFileChange: (f: File | null) => void;
+  onSubmit: () => void;
+  onError: (code: ErrorCode) => void;
+};
+
+function ActiveForm({
+  file,
+  state,
+  onFileChange,
+  onSubmit,
+  onError,
+}: ActiveFormProps) {
+  const isBusy = state.kind !== "idle";
+
+  return (
+    <div className="flex flex-col gap-5">
+      <Uploader
+        file={file}
+        disabled={isBusy}
+        onFileChange={onFileChange}
+        onTooLarge={() => onError("FILE_TOO_LARGE")}
+        onWrongType={() => onError("INVALID_PDF")}
+      />
+
+      {state.kind === "idle" ? (
+        <Button
+          size="lg"
+          className="h-11"
+          disabled={!file}
+          onClick={onSubmit}
+        >
+          Сжать PDF
+        </Button>
+      ) : (
+        <ProgressBlock state={state} />
+      )}
+    </div>
+  );
+}
+
+function ProgressBlock({
+  state,
+}: {
+  state: { kind: "uploading"; progress: number } | { kind: "processing"; startedAt: number };
+}) {
+  if (state.kind === "uploading") {
+    const pct = Math.round(state.progress * 100);
+    return (
+      <Progress value={pct}>
+        <ProgressLabel>Загрузка</ProgressLabel>
+        <ProgressValue>{(_, value) => `${value ?? 0}%`}</ProgressValue>
+      </Progress>
+    );
+  }
+  return <ProcessingBlock startedAt={state.startedAt} />;
+}
+
+function ProcessingBlock({ startedAt }: { startedAt: number }) {
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => clearInterval(t);
+  }, [startedAt]);
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between text-sm">
+        <span className="flex items-center gap-2 font-medium">
+          <Loader2 className="size-4 animate-spin text-primary" />
+          Обрабатываем PDF
+        </span>
+        <span className="text-xs text-muted-foreground tabular-nums">
+          {elapsed >= 5 ? `${elapsed} сек` : "обычно 5–20 сек"}
+        </span>
+      </div>
+      <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
+        <div className="h-full w-1/3 rounded-full bg-primary animate-[indeterminate_1.4s_ease-in-out_infinite]" />
+      </div>
+    </div>
+  );
+}
+
+function Backdrop() {
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute inset-0 -z-10"
+      style={{
+        background:
+          "radial-gradient(60% 50% at 50% 0%, color-mix(in oklch, var(--primary) 7%, transparent) 0%, transparent 80%)",
+      }}
+    />
   );
 }
