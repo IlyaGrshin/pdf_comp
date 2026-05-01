@@ -70,36 +70,44 @@ REMOTE_BOOTSTRAP
 step "Done — app is running on 127.0.0.1:$PORT (the host)"
 cat <<EOF
 
-Add ONE of these snippets to your existing reverse proxy config and reload it:
+Add this block to your existing nginx server { … } for ilyagrshn.com,
+then reload nginx:
 
-──── Caddy (typical /etc/caddy/Caddyfile) ────
-ilyagrshn.com {
-    # … your other handles …
-
-    handle /pdf_comp* {
-        reverse_proxy 127.0.0.1:$PORT
-        request_body { max_size 1100MB }
-    }
-}
-
-──── nginx (inside server { … }) ────
+──── nginx (inside the matching server { … } block) ────
 location /pdf_comp/ {
     proxy_pass http://127.0.0.1:$PORT;
     proxy_http_version 1.1;
     proxy_set_header Host \$host;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto \$scheme;
+
+    # Streaming uploads + downloads — never buffer (1 GB-class files).
     client_max_body_size 1100M;
     proxy_request_buffering off;
     proxy_buffering off;
+
+    # Compression on big PDFs can run a few minutes; default 60s is too short.
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
 }
 
-Reload your proxy:
-  caddy:  systemctl reload caddy
-  nginx:  nginx -t && systemctl reload nginx
+If you also use Caddy (e.g. for some other host), the equivalent is:
+    handle /pdf_comp* {
+        reverse_proxy 127.0.0.1:$PORT
+        request_body { max_size 1100MB }
+    }
 
-Then open: https://ilyagrshn.com/pdf_comp/
+Notes:
+  • Compression: brotli/gzip at the server level applies automatically to
+    HTML/JS/CSS/JSON. PDF downloads (Content-Type: application/pdf) stream
+    through uncompressed — JPEG inside is already compressed, recompressing
+    wastes CPU.
+  • The "/pdf_comp/" prefix is preserved end-to-end (Next.js basePath).
+    Don't add a trailing slash to proxy_pass — that would strip the prefix
+    and break Next's routing.
 
-Logs:    ssh $REMOTE 'cd $PROJECT_DIR && docker compose logs -f'
-Update:  re-run this script
+Reload:    nginx -t && systemctl reload nginx
+Open:      https://ilyagrshn.com/pdf_comp/
+Logs:      ssh $REMOTE 'cd $PROJECT_DIR && docker compose logs -f'
+Update:    re-run this script
 EOF
