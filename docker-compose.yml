@@ -8,10 +8,20 @@ services:
     # Increase for bigger boxes if you want more concurrency.
     mem_limit: 1700m
     memswap_limit: 3700m
+    # If a job spikes past the limit, kernel OOM-kills the offender (usually
+    # Python). Node-level container restart kicks in via `restart: unless-stopped`.
+    oom_kill_disable: false
     expose:
       - "3000"
     environment:
       NODE_ENV: production
+    # Cap log volume so dockerd's json-file driver can't fill the 40 GB disk
+    # over months of operation. 30 MB rolling buffer is enough to debug.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   caddy:
     image: caddy:2-alpine
@@ -30,6 +40,11 @@ services:
       - caddy_config:/config
     depends_on:
       - app
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   caddy_data:

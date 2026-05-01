@@ -10,7 +10,7 @@ import { compressionLimit } from "@/lib/concurrency";
 import { createJob, deleteJob, startSweeper } from "@/lib/job-fs";
 import { validatePdf } from "@/lib/validate-pdf";
 import type { ErrorCode } from "@/lib/errors";
-import { LIMITS } from "@/lib/runtime-limits";
+import { LIMITS, availableMemory, MEMORY_PRESSURE_FLOOR } from "@/lib/runtime-limits";
 
 export const runtime = "nodejs";
 export const maxDuration = 900;
@@ -35,6 +35,12 @@ export async function POST(req: Request) {
     compressionLimit.activeCount >= LIMITS.concurrency &&
     compressionLimit.pendingCount >= MAX_QUEUE_DEPTH
   ) {
+    return err("BUSY", 503, { headers: { "retry-after": "30" } });
+  }
+
+  // Refuse new work if the host is already memory-tight. Prevents an
+  // already-OOM-adjacent host from getting tipped over by a fresh job.
+  if (availableMemory() < MEMORY_PRESSURE_FLOOR) {
     return err("BUSY", 503, { headers: { "retry-after": "30" } });
   }
 
