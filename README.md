@@ -18,7 +18,7 @@ domain.
 On a fresh Linux VPS that already runs nginx (or another reverse proxy):
 
 ```bash
-git clone https://github.com/IlyaGrshin/pdf-comp.git
+git clone https://github.com/IlyaGrshin/pdf_comp.git
 cd pdf-comp
 sudo ./scripts/setup.sh
 ```
