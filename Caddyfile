@@ -1,0 +1,11 @@
+{$DOMAIN} {
+    reverse_proxy app:3000
+
+    # Allow PDF uploads up to the app's hard cap (LIMITS.maxBytes is at most
+    # 1 GB; the app itself rejects oversize files based on real RAM).
+    request_body {
+        max_size 1100MB
+    }
+
+    encode zstd gzip
+}

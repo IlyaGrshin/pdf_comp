@@ -1,0 +1,36 @@
+services:
+  app:
+    build: .
+    container_name: pdf-comp
+    restart: unless-stopped
+    # Cap memory aggressively for small VPS hosts (Alwyzon XS = 2 GB RAM):
+    # baseline + 1 active job ≈ 1.7 GB peak; rest of host stays usable.
+    # Increase for bigger boxes if you want more concurrency.
+    mem_limit: 1700m
+    memswap_limit: 3700m
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: pdf-comp-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      # DOMAIN comes from .env on the VPS (deploy.sh writes it).
+      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  caddy_data:
+  caddy_config:
