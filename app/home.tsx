@@ -88,8 +88,8 @@ export function Home({ maxBytes }: Props) {
             Сжатие PDF
           </h1>
           <p className="text-sm text-muted-foreground">
-            Сжимаем любые PDF без&nbsp;потери качества — векторы, прозрачности
-            и&nbsp;эффекты Figma остаются нетронутыми.
+            Сжимаем любые PDF — векторы, прозрачности и&nbsp;эффекты Figma
+            остаются нетронутыми.
           </p>
         </header>
 
@@ -102,7 +102,7 @@ export function Home({ maxBytes }: Props) {
             Без аналитики, без логов содержимого, без передачи третьим лицам.
           </Bullet>
           <Bullet icon={Zap} title="Эффективно">
-            Обычно в&nbsp;10–30&nbsp;раз компактнее, плотнее чем iLovePDF.
+            Сжимаем без потери качества.
           </Bullet>
         </ul>
 
