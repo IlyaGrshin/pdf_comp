@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { Preset } from "./presets";
+import { LIMITS } from "./runtime-limits";
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 const STDERR_CAP = 1024 * 1024;
@@ -46,6 +47,10 @@ export async function compress(opts: CompressOptions): Promise<CompressResult> {
   const pythonBin = path.join(process.cwd(), ".venv", "bin", "python");
   const scriptPath = path.join(process.cwd(), "scripts", "recompress.py");
 
+  // Share CPU between concurrent jobs: each Python invocation gets at most
+  // its fair slice. Single-job systems use everything.
+  const workers = Math.max(1, Math.floor(LIMITS.cores / LIMITS.concurrency));
+
   const originalStatPromise = fs.stat(opts.inputPath);
 
   await runProcess(
@@ -57,6 +62,7 @@ export async function compress(opts: CompressOptions): Promise<CompressResult> {
       String(args.colorQuality),
       String(args.grayQuality),
       String(args.maxLongEdge),
+      String(workers),
     ],
     timeoutMs,
   );

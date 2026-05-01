@@ -7,14 +7,19 @@ Pipeline (OCRmyPDF-style, what iLovePDF/Pdftools SDK do):
      re-encode (mozjpeg's cjpeg if available, else Pillow JPEG).
   3. Replace stream IF new bytes < original. Update /Width /Height to match.
   4. Cross-page deduplication: hash final image streams, redirect every
-     reference to identical streams onto a single survivor object (5× copies
-     of the same template image → 1 shared XObject).
+     reference to identical streams onto a single survivor object.
+
+Concurrency: resize + encode run in a ThreadPoolExecutor. Both Pillow's C
+extensions and the cjpeg subprocess release the GIL, so threads scale well.
+Decode and pikepdf object writes stay on the main thread (pikepdf is not
+thread-safe for mutation, and PdfImage decode reads object state).
 
 NEVER touches: vectors, transparency groups, soft masks (their pixel content
 is processed via the Image XObject path, but blend modes / opacity / group
 structure stays 1:1), fonts, document structure, annotations, OCGs.
 
-CLI: recompress.py <input> <output> [color_q=80] [gray_q=92] [max_long=2400]
+CLI: recompress.py <input> <output>
+     [color_q=80] [gray_q=92] [max_long=2400] [workers=auto]
 """
 import hashlib
 import io
@@ -25,16 +30,18 @@ import subprocess
 import sys
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 import pikepdf
 from pikepdf import Pdf, PdfImage, Name, Stream
 from PIL import Image
 
-# Find mozjpeg's cjpeg (or any cjpeg in PATH from libjpeg-turbo) — falls back
-# to Pillow's JPEG encoder if neither is available.
+# Find mozjpeg's cjpeg (or libjpeg-turbo's cjpeg in PATH) — falls back to
+# Pillow's JPEG encoder if neither is available.
 MOZJPEG_CANDIDATES = [
     "/opt/homebrew/opt/mozjpeg/bin/cjpeg",
     "/usr/local/opt/mozjpeg/bin/cjpeg",
+    "/opt/mozjpeg/bin/cjpeg",
     "/usr/bin/mozcjpeg",
     shutil.which("cjpeg") or "",
 ]
@@ -63,14 +70,60 @@ def encode_jpeg(pil, quality):
     return buf.getvalue()
 
 
-def recompress_pdf(input_path, output_path, color_q=80, gray_q=92, max_long=2400):
+def _resize_and_encode(work):
+    """Worker: convert mode, resize if oversized, encode JPEG. Pure CPU.
+
+    Pillow's C extensions and the cjpeg subprocess both release the GIL,
+    so this scales near-linearly in a ThreadPoolExecutor.
+    """
+    try:
+        pil = work["pil"]
+        mode = pil.mode
+        if mode == "1":
+            pil = pil.convert("L")
+            mode = "L"
+        elif mode in ("RGBA", "P", "LA"):
+            pil = pil.convert("RGB")
+            mode = "RGB"
+
+        longest = max(pil.width, pil.height)
+        did_downsample = False
+        if longest > work["max_long"]:
+            ratio = work["max_long"] / longest
+            pil = pil.resize(
+                (int(pil.width * ratio), int(pil.height * ratio)),
+                Image.LANCZOS,
+            )
+            did_downsample = True
+
+        return {
+            "new_bytes": encode_jpeg(pil, work["quality"]),
+            "new_w": pil.width,
+            "new_h": pil.height,
+            "mode": mode,
+            "did_downsample": did_downsample,
+        }
+    except Exception:
+        return {"error": True}
+
+
+def _auto_workers():
+    return min(os.cpu_count() or 2, 8)
+
+
+def recompress_pdf(input_path, output_path,
+                   color_q=80, gray_q=92, max_long=2400, workers=None):
+    if workers is None or workers <= 0:
+        workers = _auto_workers()
+
     t0 = time.time()
     pdf = Pdf.open(input_path)
 
     untouched = re_encoded = downsampled = errored = 0
     by_hash: "defaultdict[str, list[Stream]]" = defaultdict(list)
 
-    # Single pass: per-image recompress + collect content hashes for dedup.
+    # ---- Phase 1a: walk + decode (sequential, main thread) ----
+    pending: list[tuple[Stream, bytes, dict]] = []
     for obj in pdf.objects:
         if not isinstance(obj, Stream):
             continue
@@ -78,65 +131,61 @@ def recompress_pdf(input_path, output_path, color_q=80, gray_q=92, max_long=2400
             continue
         try:
             current_bytes = obj.read_raw_bytes()
-            pdfimg = PdfImage(obj)
-            pil = pdfimg.as_pil_image()
-
-            if pil.width * pil.height < 10000:
-                # Tiny icons — keep original, but still hash for dedup.
-                by_hash[hashlib.sha256(current_bytes).hexdigest()].append(obj)
-                untouched += 1
-                continue
-
-            mode = pil.mode
-            is_gray = mode in ("L", "1")
-            quality = gray_q if is_gray else color_q
-
-            if mode == "1":
-                pil = pil.convert("L")
-                mode = "L"
-            elif mode in ("RGBA", "P", "LA"):
-                pil = pil.convert("RGB")
-                mode = "RGB"
-
-            longest = max(pil.width, pil.height)
-            did_downsample = False
-            if longest > max_long:
-                ratio = max_long / longest
-                pil = pil.resize(
-                    (int(pil.width * ratio), int(pil.height * ratio)),
-                    Image.LANCZOS,
-                )
-                did_downsample = True
-
-            jb = encode_jpeg(pil, quality)
-
-            if len(jb) >= len(current_bytes):
-                by_hash[hashlib.sha256(current_bytes).hexdigest()].append(obj)
-                untouched += 1
-                continue
-
-            obj.write(jb, filter=Name.DCTDecode)
-            obj["/ColorSpace"] = Name.DeviceGray if mode == "L" else Name.DeviceRGB
-            obj["/BitsPerComponent"] = 8
-            # PDF viewers read /Width and /Height from the dict, not from the
-            # JPEG SOF markers. After resize, both must be updated — otherwise
-            # the viewer stretches a shrunken bitmap.
-            obj["/Width"] = pil.width
-            obj["/Height"] = pil.height
-            if "/DecodeParms" in obj:
-                del obj["/DecodeParms"]
-
-            by_hash[hashlib.sha256(jb).hexdigest()].append(obj)
-            if did_downsample:
-                downsampled += 1
-            else:
-                re_encoded += 1
+            pil = PdfImage(obj).as_pil_image()
         except Exception:
             errored += 1
             continue
 
-    # Index every page's XObject references once, then collapse duplicates.
-    # O(pages × xobjects + duplicates) instead of nested O(victims × pages × xobjects).
+        if pil.width * pil.height < 10000:
+            by_hash[hashlib.sha256(current_bytes).hexdigest()].append(obj)
+            untouched += 1
+            continue
+
+        is_gray = pil.mode in ("L", "1")
+        pending.append((obj, current_bytes, {
+            "pil": pil,
+            "max_long": max_long,
+            "quality": gray_q if is_gray else color_q,
+        }))
+
+    # ---- Phase 1b: parallel encode ----
+    if pending:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(_resize_and_encode, [w[2] for w in pending]))
+    else:
+        results = []
+
+    # ---- Phase 1c: apply results (sequential, main thread — pikepdf writes) ----
+    for (obj, current_bytes, _), result in zip(pending, results):
+        if result.get("error"):
+            errored += 1
+            continue
+        new_bytes = result["new_bytes"]
+        if len(new_bytes) >= len(current_bytes):
+            by_hash[hashlib.sha256(current_bytes).hexdigest()].append(obj)
+            untouched += 1
+            continue
+
+        obj.write(new_bytes, filter=Name.DCTDecode)
+        obj["/ColorSpace"] = Name.DeviceGray if result["mode"] == "L" else Name.DeviceRGB
+        obj["/BitsPerComponent"] = 8
+        # PDF viewers read /Width and /Height from the dict, not from the JPEG
+        # SOF markers. After resize, both must be updated — otherwise the
+        # viewer stretches a shrunken bitmap.
+        obj["/Width"] = result["new_w"]
+        obj["/Height"] = result["new_h"]
+        if "/DecodeParms" in obj:
+            del obj["/DecodeParms"]
+
+        by_hash[hashlib.sha256(new_bytes).hexdigest()].append(obj)
+        if result["did_downsample"]:
+            downsampled += 1
+        else:
+            re_encoded += 1
+
+    # ---- Phase 2: cross-page dedup ----
+    # Index each page's XObject references once, then collapse duplicates.
+    # O(pages × xobjects + duplicates) instead of O(victims × pages × xobjects).
     refs_by_objgen: "defaultdict[tuple, list[tuple]]" = defaultdict(list)
     for page in pdf.pages:
         if Name.Resources not in page:
@@ -178,6 +227,7 @@ def recompress_pdf(input_path, output_path, color_q=80, gray_q=92, max_long=2400
         "duplicates_collapsed": duplicates_collapsed,
         "bytes_saved_dedup": bytes_saved_dedup,
         "encoder": "cjpeg" if CJPEG else "pillow",
+        "workers": workers,
         "elapsed_s": round(time.time() - t0, 2),
     }
 
@@ -185,11 +235,13 @@ def recompress_pdf(input_path, output_path, color_q=80, gray_q=92, max_long=2400
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print(
-            "usage: recompress.py <input> <output> [color_q=80] [gray_q=92] [max_long=2400]",
+            "usage: recompress.py <input> <output> "
+            "[color_q=80] [gray_q=92] [max_long=2400] [workers=auto]",
             file=sys.stderr,
         )
         sys.exit(2)
     cq = int(sys.argv[3]) if len(sys.argv) > 3 else 80
     gq = int(sys.argv[4]) if len(sys.argv) > 4 else 92
     ml = int(sys.argv[5]) if len(sys.argv) > 5 else 2400
-    print(json.dumps(recompress_pdf(sys.argv[1], sys.argv[2], cq, gq, ml)))
+    wk = int(sys.argv[6]) if len(sys.argv) > 6 else 0
+    print(json.dumps(recompress_pdf(sys.argv[1], sys.argv[2], cq, gq, ml, wk)))
