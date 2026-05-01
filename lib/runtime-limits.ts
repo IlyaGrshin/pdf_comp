@@ -54,17 +54,18 @@ function compute() {
 
 export const LIMITS = compute();
 
-// Live memory probe — checked per-request in the compress route. Reads
-// /proc/meminfo on Linux (MemAvailable accounts for reclaimable page cache,
-// which os.freemem() under-reports as "free"). Falls back to os.freemem()
-// elsewhere.
-export function availableMemory(): number {
+// Live memory probe — only meaningful on Linux where /proc/meminfo exposes
+// MemAvailable (accounts for reclaimable page cache). On other platforms
+// (macOS dev) we return null and the route skips the check — `os.freemem()`
+// is unreliable on macOS (returns just "free" pages, not "available", so
+// it under-reports by an order of magnitude).
+export function availableMemory(): number | null {
   try {
     const meminfo = readFileSync("/proc/meminfo", "utf8");
     const match = meminfo.match(/^MemAvailable:\s+(\d+)\s+kB/m);
     if (match) return parseInt(match[1], 10) * 1024;
   } catch {
-    // /proc/meminfo not available (macOS dev) — fall through.
+    // /proc/meminfo not available — skip the check.
   }
-  return os.freemem();
+  return null;
 }

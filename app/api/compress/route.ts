@@ -40,7 +40,10 @@ export async function POST(req: Request) {
 
   // Refuse new work if the host is already memory-tight. Prevents an
   // already-OOM-adjacent host from getting tipped over by a fresh job.
-  if (availableMemory() < MEMORY_PRESSURE_FLOOR) {
+  // availableMemory() returns null on platforms without /proc/meminfo
+  // (macOS dev), in which case we skip the check.
+  const avail = availableMemory();
+  if (avail !== null && avail < MEMORY_PRESSURE_FLOOR) {
     return err("BUSY", 503, { headers: { "retry-after": "30" } });
   }
 
