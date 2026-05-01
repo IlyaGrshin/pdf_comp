@@ -44,7 +44,10 @@ export async function compress(opts: CompressOptions): Promise<CompressResult> {
   const finalPath = path.join(opts.jobDir, "final.pdf");
   const args = opts.preset.pikepdf;
 
-  const pythonBin = path.join(process.cwd(), ".venv", "bin", "python");
+  // turbopackIgnore: tells the Next.js build not to traverse .venv during
+  // module-graph analysis. The directory contains symlinks pointing outside
+  // the project root (system Python install), which Turbopack rejects.
+  const pythonBin = path.join(/* turbopackIgnore: true */ process.cwd(), ".venv", "bin", "python");
   const scriptPath = path.join(process.cwd(), "scripts", "recompress.py");
 
   // Share CPU between concurrent jobs: each Python invocation gets at most
