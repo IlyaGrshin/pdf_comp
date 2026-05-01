@@ -9,43 +9,17 @@ services:
     mem_limit: 1700m
     memswap_limit: 3700m
     # If a job spikes past the limit, kernel OOM-kills the offender (usually
-    # Python). Node-level container restart kicks in via `restart: unless-stopped`.
+    # Python). Container restart kicks in via `restart: unless-stopped`.
     oom_kill_disable: false
-    expose:
-      - "3000"
+    ports:
+      # Bind only on localhost — your existing reverse proxy on the host
+      # connects here. Override with PDF_COMP_PORT env var if 3127 conflicts.
+      - "127.0.0.1:${PDF_COMP_PORT:-3127}:3000"
     environment:
       NODE_ENV: production
-    # Cap log volume so dockerd's json-file driver can't fill the 40 GB disk
-    # over months of operation. 30 MB rolling buffer is enough to debug.
+    # Cap log volume so dockerd's json-file driver can't fill disk.
     logging:
       driver: "json-file"
       options:
         max-size: "10m"
         max-file: "3"
-
-  caddy:
-    image: caddy:2-alpine
-    container_name: pdf-comp-caddy
-    restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    environment:
-      # DOMAIN comes from .env on the VPS (deploy.sh writes it).
-      DOMAIN: ${DOMAIN:?Set DOMAIN in .env}
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - app
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-volumes:
-  caddy_data:
-  caddy_config:
