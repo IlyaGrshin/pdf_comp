@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
 import { Uploader } from "@/components/uploader";
 import { ResultCard, type CompressResponse } from "@/components/result-card";
 import { ErrorBanner } from "@/components/error-banner";
-import { Button } from "@/components/ui/button";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
 import { DEFAULT_PRESET } from "@/lib/presets";
 import { ERROR_CODES, type ErrorCode } from "@/lib/errors";
@@ -41,10 +40,9 @@ export default function Page() {
 
   const isBusy = state.kind === "uploading" || state.kind === "processing";
 
-  const submit = () => {
-    if (!file || isBusy) return;
+  const startUpload = useCallback((picked: File) => {
     const fd = new FormData();
-    fd.append("file", file);
+    fd.append("file", picked);
     fd.append("preset", DEFAULT_PRESET);
 
     const xhr = new XMLHttpRequest();
@@ -76,6 +74,11 @@ export default function Page() {
       }
     };
     xhr.send(fd);
+  }, []);
+
+  const handleFileChange = (next: File | null) => {
+    setFile(next);
+    if (next) startUpload(next);
   };
 
   const reset = () => {
@@ -113,8 +116,7 @@ export default function Page() {
               file={file}
               maxBytes={maxBytes}
               state={state}
-              onFileChange={setFile}
-              onSubmit={submit}
+              onFileChange={handleFileChange}
               onError={(code) => setState({ kind: "error", code })}
             />
           )}
@@ -135,7 +137,6 @@ type ActiveFormProps = {
   maxBytes: number;
   state: Extract<State, { kind: "idle" } | { kind: "uploading" } | { kind: "processing" }>;
   onFileChange: (f: File | null) => void;
-  onSubmit: () => void;
   onError: (code: ErrorCode) => void;
 };
 
@@ -144,7 +145,6 @@ function ActiveForm({
   maxBytes,
   state,
   onFileChange,
-  onSubmit,
   onError,
 }: ActiveFormProps) {
   const isBusy = state.kind !== "idle";
@@ -159,19 +159,7 @@ function ActiveForm({
         onTooLarge={() => onError("FILE_TOO_LARGE")}
         onWrongType={() => onError("INVALID_PDF")}
       />
-
-      {state.kind === "idle" ? (
-        <Button
-          size="lg"
-          className="h-11"
-          disabled={!file}
-          onClick={onSubmit}
-        >
-          Сжать PDF
-        </Button>
-      ) : (
-        <ProgressBlock state={state} />
-      )}
+      {state.kind !== "idle" && <ProgressBlock state={state} />}
     </div>
   );
 }
