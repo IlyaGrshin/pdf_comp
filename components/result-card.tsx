@@ -33,16 +33,16 @@ export function ResultCard({ result, fileName, onReset }: Props) {
           <Check className="size-3.5" />
         </div>
         <span className="font-medium">
-          {result.noBenefit ? "Готово" : `Сжато на ${formatRatio(result.ratio)}`}
+          {result.noBenefit ? "Done" : `Saved ${formatRatio(result.ratio)}`}
         </span>
       </div>
 
       {result.noBenefit ? (
         <Alert>
           <Info />
-          <AlertTitle>Уже хорошо сжат</AlertTitle>
+          <AlertTitle>Already well-compressed</AlertTitle>
           <AlertDescription>
-            Дополнительное сжатие не дало выигрыша — возвращаем оригинальный файл.
+            Further compression didn&rsquo;t help — returning the original file.
           </AlertDescription>
         </Alert>
       ) : (
@@ -53,10 +53,10 @@ export function ResultCard({ result, fileName, onReset }: Props) {
       )}
 
       <div className="flex items-center justify-between text-xs text-muted-foreground">
-        <span>Обработано за {formatDuration(result.durationMs)}</span>
+        <span>Processed in {formatDuration(result.durationMs)}</span>
         {!result.noBenefit && (
           <span>
-            экономия {formatBytes(result.originalBytes - result.compressedBytes)}
+            saved {formatBytes(result.originalBytes - result.compressedBytes)}
           </span>
         )}
       </div>
@@ -68,11 +68,11 @@ export function ResultCard({ result, fileName, onReset }: Props) {
           className={cn(buttonVariants({ size: "lg" }), "h-11 flex-1 text-sm")}
         >
           <Download />
-          Скачать PDF
+          Download PDF
         </a>
         <Button variant="outline" size="lg" className="h-11" onClick={onReset}>
           <RotateCcw />
-          Сжать другой
+          Compress another
         </Button>
       </div>
     </div>
@@ -89,8 +89,8 @@ function ResultBars({
   const compressedWidth = Math.max(4, (compressedBytes / originalBytes) * 100);
   return (
     <div className="grid gap-3">
-      <Row label="Было" bytes={originalBytes} widthPct={100} tone="muted" />
-      <Row label="Стало" bytes={compressedBytes} widthPct={compressedWidth} tone="primary" />
+      <Row label="Before" bytes={originalBytes} widthPct={100} tone="muted" />
+      <Row label="After" bytes={compressedBytes} widthPct={compressedWidth} tone="primary" />
     </div>
   );
 }

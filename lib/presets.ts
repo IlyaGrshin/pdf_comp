@@ -17,9 +17,9 @@ export type Preset = {
 export const PRESETS: Record<PresetId, Preset> = {
   maximum: {
     id: "maximum",
-    label: "Максимум",
-    description: "Сохраняет векторы, прозрачности и эффекты Figma.",
-    detail: "обычно сжимаем в 10–30 раз",
+    label: "Maximum",
+    description: "Preserves vectors, transparency and Figma effects.",
+    detail: "image-only recompress, no vector flattening",
     pikepdf: {
       colorQuality: 80,
       grayQuality: 92,

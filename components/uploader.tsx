@@ -53,7 +53,7 @@ export function Uploader({ file, maxBytes, disabled, onFileChange, onTooLarge, o
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="Удалить файл"
+            aria-label="Remove file"
             onClick={() => onFileChange(null)}
           >
             <X />
@@ -78,9 +78,9 @@ export function Uploader({ file, maxBytes, disabled, onFileChange, onTooLarge, o
         <Upload className="size-5 text-muted-foreground" />
       </div>
       <p className="text-sm font-medium">
-        {isDragActive ? "Отпустите PDF" : "Перетащите PDF или нажмите для выбора"}
+        {isDragActive ? "Drop the PDF" : "Drop a PDF or click to choose"}
       </p>
-      <p className="text-xs text-muted-foreground">до {formatBytes(maxBytes)}</p>
+      <p className="text-xs text-muted-foreground">up to {formatBytes(maxBytes)}</p>
     </div>
   );
 }

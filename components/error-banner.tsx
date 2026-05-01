@@ -9,48 +9,48 @@ export type { ErrorCode };
 
 const MESSAGES: Record<ErrorCode, { title: string; description: string }> = {
   FILE_TOO_LARGE: {
-    title: "Файл слишком большой",
-    description: "Размер выше лимита сервера. Попробуйте разбить документ на части.",
+    title: "File too large",
+    description: "The file is over the server limit. Try splitting the document into parts.",
   },
   INVALID_PDF: {
-    title: "Это не PDF-файл",
-    description: "Похоже, файл повреждён или формат не поддерживается.",
+    title: "Not a PDF",
+    description: "The file looks damaged or the format isn’t supported.",
   },
   PASSWORD_PROTECTED: {
-    title: "PDF защищён паролем",
-    description: "Снимите защиту паролем и попробуйте снова.",
+    title: "Password-protected PDF",
+    description: "Remove the password and try again.",
   },
   INVALID_PRESET: {
-    title: "Неизвестный режим сжатия",
-    description: "Перезагрузите страницу и попробуйте снова.",
+    title: "Unknown compression mode",
+    description: "Refresh the page and try again.",
   },
   MISSING_FILE: {
-    title: "Файл не выбран",
-    description: "Перетащите PDF в окно загрузки и попробуйте снова.",
+    title: "No file selected",
+    description: "Drop a PDF into the upload area and try again.",
   },
   BUSY: {
-    title: "Сервис занят",
-    description: "Слишком много одновременных запросов. Попробуйте через минуту.",
+    title: "Service busy",
+    description: "Too many concurrent requests. Try again in a minute.",
   },
   COMPRESS_FAILED: {
-    title: "Не удалось обработать PDF",
-    description: "Файл может быть нестандартным или повреждён. Попробуйте другой PDF.",
+    title: "Couldn’t process the PDF",
+    description: "The file may be non-standard or damaged. Try a different PDF.",
   },
   COMPRESS_TIMEOUT: {
-    title: "Слишком долгая обработка",
-    description: "Файл оказался сложнее обычного. Попробуйте PDF поменьше.",
+    title: "Took too long",
+    description: "This file is more complex than usual. Try a smaller PDF.",
   },
   EXPIRED: {
-    title: "Ссылка устарела",
-    description: "Загрузите PDF снова — файлы хранятся не дольше 10 минут.",
+    title: "Link expired",
+    description: "Upload the PDF again — files are kept for at most 10 minutes.",
   },
   INTERNAL: {
-    title: "Что-то пошло не так",
-    description: "Внутренняя ошибка сервиса. Попробуйте ещё раз через минуту.",
+    title: "Something went wrong",
+    description: "Internal server error. Try again in a minute.",
   },
   NETWORK: {
-    title: "Нет связи с сервером",
-    description: "Проверьте интернет-соединение и попробуйте снова.",
+    title: "No connection to server",
+    description: "Check your internet connection and try again.",
   },
 };
 
@@ -70,7 +70,7 @@ export function ErrorBanner({ code, onRetry }: Props) {
       </Alert>
       <Button variant="outline" size="lg" className="h-11 self-start" onClick={onRetry}>
         <RotateCcw />
-        Попробовать снова
+        Try again
       </Button>
     </div>
   );

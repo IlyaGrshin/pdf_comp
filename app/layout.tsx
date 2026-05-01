@@ -4,13 +4,13 @@ import "./globals.css";
 
 const inter = Inter({
   variable: "--font-sans",
-  subsets: ["latin", "cyrillic"],
+  subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
-  title: "Сжатие PDF",
+  title: "Compress PDF",
   description:
-    "Приватное сжатие любых PDF без потери качества. Векторы и эффекты Figma остаются нетронутыми. Файлы не читаются, не сохраняются и не передаются третьим лицам.",
+    "Private PDF compression without quality loss. Vectors and Figma effects stay intact. Files are not read, not stored, not shared with third parties.",
 };
 
 export default function RootLayout({
@@ -19,7 +19,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ru" className={`${inter.variable} h-full antialiased`}>
+    <html lang="en" className={`${inter.variable} h-full antialiased`}>
       <body className="min-h-full bg-background font-sans text-foreground">
         {children}
       </body>

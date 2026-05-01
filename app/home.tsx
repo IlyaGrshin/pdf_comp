@@ -85,24 +85,24 @@ export function Home({ maxBytes }: Props) {
       <main className="mx-auto flex w-full max-w-md flex-1 flex-col justify-center px-5 py-12">
         <header className="mb-5 space-y-2">
           <h1 className="font-heading text-2xl font-semibold tracking-tight">
-            Сжатие PDF
+            Compress PDF
           </h1>
           <p className="text-sm text-muted-foreground">
-            Сжимаем любые PDF — векторы, прозрачности и&nbsp;эффекты Figma
-            остаются нетронутыми.
+            Works on any PDF — vectors, transparency and Figma effects pass
+            through untouched.
           </p>
         </header>
 
         <ul className="mb-6 grid gap-2 text-xs">
-          <Bullet icon={Lock} title="Приватно">
-            Не&nbsp;читаем содержимое; файлы удаляются после скачивания
-            или через&nbsp;10&nbsp;минут.
+          <Bullet icon={Lock} title="Private">
+            We don&rsquo;t read your content; files are deleted on download
+            or after 10 minutes.
           </Bullet>
-          <Bullet icon={Shield} title="Безопасно">
-            Без аналитики, без логов содержимого, без передачи третьим лицам.
+          <Bullet icon={Shield} title="Secure">
+            No analytics, no content logging, no third-party sharing.
           </Bullet>
-          <Bullet icon={Zap} title="Эффективно">
-            Сжимаем без потери качества.
+          <Bullet icon={Zap} title="Efficient">
+            Compresses without losing quality.
           </Bullet>
         </ul>
 
@@ -171,7 +171,7 @@ function ProgressBlock({
     const pct = Math.round(state.progress * 100);
     return (
       <Progress value={pct}>
-        <ProgressLabel>Загрузка</ProgressLabel>
+        <ProgressLabel>Uploading</ProgressLabel>
         <ProgressValue>{(_, value) => `${value ?? 0}%`}</ProgressValue>
       </Progress>
     );
@@ -191,10 +191,10 @@ function ProcessingBlock({ startedAt }: { startedAt: number }) {
       <div className="flex items-center justify-between text-sm">
         <span className="flex items-center gap-2 font-medium">
           <Loader2 className="size-4 animate-spin text-primary" />
-          Обрабатываем PDF
+          Compressing
         </span>
         <span className="text-xs text-muted-foreground tabular-nums">
-          {elapsed >= 5 ? `${elapsed} сек` : "обычно 5–20 сек"}
+          {elapsed >= 5 ? `${elapsed}s` : "usually 5–20s"}
         </span>
       </div>
       <div className="h-1 w-full overflow-hidden rounded-full bg-muted">
