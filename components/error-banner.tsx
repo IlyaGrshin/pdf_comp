@@ -10,7 +10,7 @@ export type { ErrorCode };
 const MESSAGES: Record<ErrorCode, { title: string; description: string }> = {
   FILE_TOO_LARGE: {
     title: "Файл слишком большой",
-    description: "Максимальный размер — 1 ГБ. Попробуйте разбить документ на части.",
+    description: "Размер выше лимита сервера. Попробуйте разбить документ на части.",
   },
   INVALID_PDF: {
     title: "Это не PDF-файл",

@@ -7,17 +7,16 @@ import { Button } from "@/components/ui/button";
 import { formatBytes } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
-const MAX_BYTES = 1024 * 1024 * 1024;
-
 type Props = {
   file: File | null;
+  maxBytes: number;
   disabled?: boolean;
   onFileChange: (file: File | null) => void;
   onTooLarge?: () => void;
   onWrongType?: () => void;
 };
 
-export function Uploader({ file, disabled, onFileChange, onTooLarge, onWrongType }: Props) {
+export function Uploader({ file, maxBytes, disabled, onFileChange, onTooLarge, onWrongType }: Props) {
   const onDrop = useCallback(
     (accepted: File[], rejections: FileRejection[]) => {
       if (rejections.length > 0) {
@@ -36,7 +35,7 @@ export function Uploader({ file, disabled, onFileChange, onTooLarge, onWrongType
     onDrop,
     multiple: false,
     accept: { "application/pdf": [".pdf"] },
-    maxSize: MAX_BYTES,
+    maxSize: maxBytes,
     disabled: disabled || file !== null,
   });
 
@@ -81,7 +80,7 @@ export function Uploader({ file, disabled, onFileChange, onTooLarge, onWrongType
       <p className="text-sm font-medium">
         {isDragActive ? "Отпустите PDF" : "Перетащите PDF или нажмите для выбора"}
       </p>
-      <p className="text-xs text-muted-foreground">до 1 ГБ</p>
+      <p className="text-xs text-muted-foreground">до {formatBytes(maxBytes)}</p>
     </div>
   );
 }

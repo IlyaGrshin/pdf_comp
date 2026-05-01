@@ -10,11 +10,11 @@ import { compressionLimit } from "@/lib/concurrency";
 import { createJob, deleteJob, startSweeper } from "@/lib/job-fs";
 import { validatePdf } from "@/lib/validate-pdf";
 import type { ErrorCode } from "@/lib/errors";
+import { LIMITS } from "@/lib/runtime-limits";
 
 export const runtime = "nodejs";
 export const maxDuration = 900;
 
-const MAX_BYTES = 1024 * 1024 * 1024;
 const MAX_QUEUE_DEPTH = 1;
 
 startSweeper();
@@ -27,11 +27,14 @@ function err(code: ErrorCode, status: number, init?: ResponseInit): Response {
 
 export async function POST(req: Request) {
   const contentLength = Number(req.headers.get("content-length") ?? 0);
-  if (contentLength > MAX_BYTES) {
+  if (contentLength > LIMITS.maxBytes) {
     return err("FILE_TOO_LARGE", 413);
   }
 
-  if (compressionLimit.activeCount >= 2 && compressionLimit.pendingCount >= MAX_QUEUE_DEPTH) {
+  if (
+    compressionLimit.activeCount >= LIMITS.concurrency &&
+    compressionLimit.pendingCount >= MAX_QUEUE_DEPTH
+  ) {
     return err("BUSY", 503, { headers: { "retry-after": "30" } });
   }
 
@@ -48,7 +51,7 @@ export async function POST(req: Request) {
   if (!(file instanceof File) || file.size === 0) {
     return err("MISSING_FILE", 400);
   }
-  if (file.size > MAX_BYTES) {
+  if (file.size > LIMITS.maxBytes) {
     return err("FILE_TOO_LARGE", 413);
   }
 

@@ -17,12 +17,23 @@ type State =
   | { kind: "done"; result: CompressResponse }
   | { kind: "error"; code: ErrorCode };
 
+// Conservative pre-fetch default. Real value comes from /api/config and reflects
+// the actual host's RAM (server-side computation in lib/runtime-limits.ts).
+const FALLBACK_MAX_BYTES = 100 * 1024 * 1024;
+
 export default function Page() {
   const [file, setFile] = useState<File | null>(null);
   const [state, setState] = useState<State>({ kind: "idle" });
+  const [maxBytes, setMaxBytes] = useState(FALLBACK_MAX_BYTES);
   const xhrRef = useRef<XMLHttpRequest | null>(null);
 
   useEffect(() => {
+    fetch("/api/config")
+      .then((r) => r.json())
+      .then((d: { maxBytes: number }) => {
+        if (typeof d.maxBytes === "number" && d.maxBytes > 0) setMaxBytes(d.maxBytes);
+      })
+      .catch(() => undefined);
     return () => {
       xhrRef.current?.abort();
     };
@@ -100,6 +111,7 @@ export default function Page() {
           ) : (
             <ActiveForm
               file={file}
+              maxBytes={maxBytes}
               state={state}
               onFileChange={setFile}
               onSubmit={submit}
@@ -120,6 +132,7 @@ export default function Page() {
 
 type ActiveFormProps = {
   file: File | null;
+  maxBytes: number;
   state: Extract<State, { kind: "idle" } | { kind: "uploading" } | { kind: "processing" }>;
   onFileChange: (f: File | null) => void;
   onSubmit: () => void;
@@ -128,6 +141,7 @@ type ActiveFormProps = {
 
 function ActiveForm({
   file,
+  maxBytes,
   state,
   onFileChange,
   onSubmit,
@@ -139,6 +153,7 @@ function ActiveForm({
     <div className="flex flex-col gap-5">
       <Uploader
         file={file}
+        maxBytes={maxBytes}
         disabled={isBusy}
         onFileChange={onFileChange}
         onTooLarge={() => onError("FILE_TOO_LARGE")}
