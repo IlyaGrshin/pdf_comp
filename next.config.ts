@@ -38,7 +38,7 @@ const nextConfig: NextConfig = {
             key: "Content-Security-Policy",
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-inline'",
+              `script-src 'self' 'unsafe-inline'${process.env.NODE_ENV === "production" ? "" : " 'unsafe-eval'"}`,
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data:",
               "font-src 'self' data:",
@@ -47,7 +47,11 @@ const nextConfig: NextConfig = {
               "form-action 'self'",
               "base-uri 'self'",
               "object-src 'none'",
-              "upgrade-insecure-requests",
+              // Skip in dev — would upgrade http://localhost to https:// and
+              // break every subresource on the local dev server.
+              ...(process.env.NODE_ENV === "production"
+                ? ["upgrade-insecure-requests"]
+                : []),
             ].join("; "),
           },
         ],
