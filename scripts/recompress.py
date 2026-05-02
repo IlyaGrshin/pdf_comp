@@ -123,7 +123,20 @@ def recompress_pdf(input_path, output_path,
     by_hash: "defaultdict[str, list[Stream]]" = defaultdict(list)
 
     # ---- Phase 1a: walk + decode (sequential, main thread) ----
+    # Two early-exits before the expensive decode:
+    #   (a) raw-byte hash already seen → this object is a byte-identical
+    #       duplicate of one we'll process; route it through dedup directly,
+    #       skipping decode/resize/encode. Pays off on multi-page decks where
+    #       the same logo/header appears N times.
+    #   (b) /Width × /Height from the object dict shows the image is too small
+    #       to be worth touching → skip decode entirely.
     pending: list[tuple[Stream, bytes, dict]] = []
+    seen_raw: dict[str, Stream] = {}
+    aliases: "defaultdict[tuple, list[Stream]]" = defaultdict(list)
+    # Untouched-first objects are deferred until aliases are fully collected:
+    # an object marked untouched on iteration 5 may pick up aliases on
+    # iteration 30, so we record (obj, raw_hash) and finalize after the loop.
+    untouched_first: list[tuple[Stream, str]] = []
     for obj in pdf.objects:
         if not isinstance(obj, Stream):
             continue
@@ -131,13 +144,35 @@ def recompress_pdf(input_path, output_path,
             continue
         try:
             current_bytes = obj.read_raw_bytes()
+        except Exception:
+            errored += 1
+            continue
+
+        raw_hash = hashlib.sha256(current_bytes).hexdigest()
+        first = seen_raw.get(raw_hash)
+        if first is not None:
+            aliases[first.objgen].append(obj)
+            continue
+        seen_raw[raw_hash] = obj
+
+        try:
+            w = int(obj.get("/Width", 0) or 0)
+            h = int(obj.get("/Height", 0) or 0)
+        except Exception:
+            w = h = 0
+        if w > 0 and h > 0 and w * h < 10000:
+            untouched_first.append((obj, raw_hash))
+            untouched += 1
+            continue
+
+        try:
             pil = PdfImage(obj).as_pil_image()
         except Exception:
             errored += 1
             continue
 
         if pil.width * pil.height < 10000:
-            by_hash[hashlib.sha256(current_bytes).hexdigest()].append(obj)
+            untouched_first.append((obj, raw_hash))
             untouched += 1
             continue
 
@@ -148,6 +183,11 @@ def recompress_pdf(input_path, output_path,
             "quality": gray_q if is_gray else color_q,
         }))
 
+    for obj, raw_hash in untouched_first:
+        group = by_hash[raw_hash]
+        group.append(obj)
+        group.extend(aliases.get(obj.objgen, []))
+
     # ---- Phase 1b: parallel encode ----
     if pending:
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -157,12 +197,15 @@ def recompress_pdf(input_path, output_path,
 
     # ---- Phase 1c: apply results (sequential, main thread — pikepdf writes) ----
     for (obj, current_bytes, _), result in zip(pending, results):
+        obj_aliases = aliases.get(obj.objgen, [])
         if result.get("error"):
             errored += 1
             continue
         new_bytes = result["new_bytes"]
         if len(new_bytes) >= len(current_bytes):
-            by_hash[hashlib.sha256(current_bytes).hexdigest()].append(obj)
+            group = by_hash[hashlib.sha256(current_bytes).hexdigest()]
+            group.append(obj)
+            group.extend(obj_aliases)
             untouched += 1
             continue
 
@@ -177,7 +220,13 @@ def recompress_pdf(input_path, output_path,
         if "/DecodeParms" in obj:
             del obj["/DecodeParms"]
 
-        by_hash[hashlib.sha256(new_bytes).hexdigest()].append(obj)
+        group = by_hash[hashlib.sha256(new_bytes).hexdigest()]
+        group.append(obj)
+        # Aliases share `obj`'s raw bytes, not its post-recompress bytes — but
+        # they still need their references replaced. Putting them in the same
+        # by_hash group makes phase 2 redirect them onto `obj` (the survivor),
+        # so the rewritten dict on `obj` propagates everywhere.
+        group.extend(obj_aliases)
         if result["did_downsample"]:
             downsampled += 1
         else:
