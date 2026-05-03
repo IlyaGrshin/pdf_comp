@@ -43,10 +43,10 @@ RUN apt-get update \
 
 RUN groupadd -r app && useradd -r -g app -d /app app
 
-# Python venv with pikepdf + pyvips (Pillow stays as a thin decode bridge —
-# pikepdf's PdfImage.as_pil_image() is the only viable decode API). Install
-# BEFORE copying app code so the venv layer is reused across builds when
-# only the Next.js source changes.
+# Python venv with pikepdf + pyvips (Pillow comes in transitively via pikepdf;
+# PdfImage.as_pil_image() is its decode API). Install BEFORE copying app code
+# so the venv layer is reused across builds when only the Next.js source
+# changes.
 COPY --chown=app:app scripts/requirements.txt /app/scripts/requirements.txt
 RUN python3 -m venv /app/.venv \
  && /app/.venv/bin/pip install --no-cache-dir --upgrade pip \

@@ -90,7 +90,7 @@ memory detection misreports).
 | File | Why it matters |
 |------|----------------|
 | `lib/compress.ts` | spawns Python, no-benefit guard, kicks off `fs.stat(input)` in parallel with the subprocess |
-| `scripts/recompress.py` | the actual compression — pikepdf + pyvips + mozjpeg + parallel encode + dedup. Falls back to libvips' `jpegsave` if mozjpeg's `cjpeg` isn't on PATH. Pillow stays as a thin decode bridge (pikepdf's `PdfImage.as_pil_image()` is the only viable decode API). |
+| `scripts/recompress.py` | the actual compression — pikepdf + pyvips + mozjpeg + parallel encode + dedup. Falls back to libvips' `jpegsave` if mozjpeg's `cjpeg` isn't on PATH. Pillow comes in transitively via pikepdf (`PdfImage.as_pil_image()` returns a PIL Image, which we duck-type into a `pyvips.Image.new_from_memory` call). |
 | `lib/runtime-limits.ts` | host-aware autotune of concurrency and file size cap; per-request memory pressure probe |
 | `lib/config.ts` | `BASE_PATH` — keep in sync with `next.config.ts`, `Dockerfile`, host reverse proxy |
 | `lib/errors.ts` | shared error-code union (server emits + client maps to copy) |
