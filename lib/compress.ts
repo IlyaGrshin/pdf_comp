@@ -24,6 +24,7 @@ export class SubprocessTimeoutError extends Error {
 
 type CompressOptions = {
   inputPath: string;
+  inputBytes: number;
   jobDir: string;
   preset: Preset;
   timeoutMs?: number;
@@ -54,8 +55,6 @@ export async function compress(opts: CompressOptions): Promise<CompressResult> {
   // its fair slice. Single-job systems use everything.
   const workers = Math.max(1, Math.floor(LIMITS.cores / LIMITS.concurrency));
 
-  const originalStatPromise = fs.stat(opts.inputPath);
-
   await runProcess(
     pythonBin,
     [
@@ -70,11 +69,8 @@ export async function compress(opts: CompressOptions): Promise<CompressResult> {
     timeoutMs,
   );
 
-  const [originalStat, finalStat] = await Promise.all([
-    originalStatPromise,
-    fs.stat(finalPath),
-  ]);
-  const originalBytes = originalStat.size;
+  const finalStat = await fs.stat(finalPath);
+  const originalBytes = opts.inputBytes;
   const compressedBytes = finalStat.size;
   const noBenefit = compressedBytes >= originalBytes * NO_BENEFIT_THRESHOLD;
 

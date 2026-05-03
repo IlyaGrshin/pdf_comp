@@ -90,7 +90,7 @@ export async function POST(req: Request) {
     }
 
     const result = await compressionLimit(() =>
-      compress({ inputPath, jobDir: job.dir, preset }),
+      compress({ inputPath, inputBytes: file.size, jobDir: job.dir, preset }),
     );
 
     return Response.json({
