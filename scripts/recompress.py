@@ -3,16 +3,24 @@
 
 Pipeline (OCRmyPDF-style, what iLovePDF/Pdftools SDK do):
   1. pikepdf walks every Image XObject in the PDF.
-  2. For each image: decode (Pillow) → optional downsample (LANCZOS) →
-     re-encode (mozjpeg's cjpeg if available, else Pillow JPEG).
+  2. For each image: decode (pikepdf → Pillow bridge → pyvips) → optional
+     downsample (lanczos3) → re-encode (mozjpeg's cjpeg if available, else
+     libvips' jpegsave).
   3. Replace stream IF new bytes < original. Update /Width /Height to match.
   4. Cross-page deduplication: hash final image streams, redirect every
      reference to identical streams onto a single survivor object.
 
-Concurrency: resize + encode run in a ThreadPoolExecutor. Both Pillow's C
-extensions and the cjpeg subprocess release the GIL, so threads scale well.
-Decode and pikepdf object writes stay on the main thread (pikepdf is not
-thread-safe for mutation, and PdfImage decode reads object state).
+Concurrency: resize + encode run in a ThreadPoolExecutor. libvips releases
+the GIL during pixel ops and the cjpeg subprocess does too, so threads
+scale well. Decode and pikepdf object writes stay on the main thread
+(pikepdf is not thread-safe for mutation, and PdfImage decode reads
+object state).
+
+Pillow is a thin decode bridge only — pikepdf's PdfImage.as_pil_image()
+is the sole supported decode API; alternatives (extract_to) raise on
+indexed palettes / predictor FlateDecode / custom /Decode arrays, which
+Figma exports use heavily. Every operation downstream of the bridge runs
+on pyvips.
 
 NEVER touches: vectors, transparency groups, soft masks (their pixel content
 is processed via the Image XObject path, but blend modes / opacity / group
@@ -22,7 +30,6 @@ CLI: recompress.py <input> <output>
      [color_q=80] [gray_q=92] [max_long=2400] [workers=auto]
 """
 import hashlib
-import io
 import json
 import os
 import shutil
@@ -33,11 +40,16 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
 import pikepdf
+import pyvips
 from pikepdf import Pdf, PdfImage, Name, Stream
-from PIL import Image
+from PIL import Image  # Decode bridge ONLY — pikepdf hands us a PIL Image.
+
+# libvips caches operation results across calls; in a long batch (every
+# Image XObject in a 200-page deck) this holds decoded tiles in RAM. Disable.
+pyvips.cache_set_max(0)
 
 # Find mozjpeg's cjpeg (or libjpeg-turbo's cjpeg in PATH) — falls back to
-# Pillow's JPEG encoder if neither is available.
+# libvips' JPEG encoder if neither is available.
 MOZJPEG_CANDIDATES = [
     "/opt/homebrew/opt/mozjpeg/bin/cjpeg",
     "/usr/local/opt/mozjpeg/bin/cjpeg",
@@ -52,58 +64,64 @@ CJPEG = next((p for p in MOZJPEG_CANDIDATES if p and os.path.isfile(p)), None)
 MIN_PIXELS_TO_RECOMPRESS = 10_000
 
 
-def encode_jpeg(pil, quality):
-    """Encode PIL image as JPEG; prefer cjpeg, fall back to Pillow."""
+def _pil_to_vips(pil):
+    """Bridge pikepdf's Pillow output to pyvips, normalizing mode in transit.
+
+    Returns (vips_image, output_mode) where output_mode is "L" or "RGB".
+    Collapses every PIL mode we expect to see from PDF Image XObjects into
+    one of those two — alpha channels and palettes flatten to RGB (the
+    pre-migration code did the same just before encode).
+    """
+    if pil.mode == "1":
+        pil = pil.convert("L")
+    elif pil.mode in ("RGBA", "P", "LA", "CMYK"):
+        # CMYK previously collapsed to RGB inside encode_jpeg's cjpeg branch;
+        # doing it here unifies the path for both encoder branches.
+        pil = pil.convert("RGB")
+    bands = 1 if pil.mode == "L" else 3
+    interp = "b-w" if bands == 1 else "srgb"
+    img = pyvips.Image.new_from_memory(
+        pil.tobytes(), pil.width, pil.height, bands, "uchar"
+    )
+    return img.copy(interpretation=interp), ("L" if bands == 1 else "RGB")
+
+
+def encode_jpeg(img, mode, quality):
+    """Encode vips Image as JPEG; prefer cjpeg, fall back to libvips' jpegsave."""
     if CJPEG:
-        if pil.mode == "L":
-            marker = b"P5"
-        else:
-            marker = b"P6"
-            if pil.mode != "RGB":
-                pil = pil.convert("RGB")
-        w, h = pil.size
-        pnm = b"%s\n%d %d\n255\n" % (marker, w, h) + pil.tobytes()
+        marker = b"P5" if mode == "L" else b"P6"
+        # write_to_memory returns tightly packed band-interleaved uchar bytes,
+        # exactly the layout PNM expects. No stride padding for 8-bit.
+        pnm = b"%s\n%d %d\n255\n" % (marker, img.width, img.height) + img.write_to_memory()
         return subprocess.run(
             [CJPEG, "-quality", str(quality), "-optimize", "-progressive"],
             input=pnm, capture_output=True, check=True,
         ).stdout
-    if pil.mode not in ("RGB", "L"):
-        pil = pil.convert("RGB")
-    buf = io.BytesIO()
-    pil.save(buf, format="JPEG", quality=quality, optimize=True, progressive=True)
-    return buf.getvalue()
+    return img.jpegsave_buffer(
+        Q=quality, optimize_coding=True, interlace=True, strip=True
+    )
 
 
 def _resize_and_encode(work):
-    """Worker: convert mode, resize if oversized, encode JPEG. Pure CPU.
+    """Worker: resize if oversized, encode JPEG. Pure CPU.
 
-    Pillow's C extensions and the cjpeg subprocess both release the GIL,
-    so this scales near-linearly in a ThreadPoolExecutor.
+    libvips releases the GIL during pixel ops and the cjpeg subprocess
+    does too, so this scales near-linearly in a ThreadPoolExecutor.
     """
     try:
-        pil = work["pil"]
-        mode = pil.mode
-        if mode == "1":
-            pil = pil.convert("L")
-            mode = "L"
-        elif mode in ("RGBA", "P", "LA"):
-            pil = pil.convert("RGB")
-            mode = "RGB"
+        img = work["img"]
+        mode = work["mode"]
 
-        longest = max(pil.width, pil.height)
+        longest = max(img.width, img.height)
         did_downsample = False
         if longest > work["max_long"]:
-            ratio = work["max_long"] / longest
-            pil = pil.resize(
-                (int(pil.width * ratio), int(pil.height * ratio)),
-                Image.LANCZOS,
-            )
+            img = img.resize(work["max_long"] / longest, kernel="lanczos3")
             did_downsample = True
 
         return {
-            "new_bytes": encode_jpeg(pil, work["quality"]),
-            "new_w": pil.width,
-            "new_h": pil.height,
+            "new_bytes": encode_jpeg(img, mode, work["quality"]),
+            "new_w": img.width,
+            "new_h": img.height,
             "mode": mode,
             "did_downsample": did_downsample,
         }
@@ -171,18 +189,20 @@ def recompress_pdf(input_path, output_path,
 
         try:
             pil = PdfImage(obj).as_pil_image()
+            img, out_mode = _pil_to_vips(pil)
         except Exception:
             errored += 1
             continue
 
-        if pil.width * pil.height < MIN_PIXELS_TO_RECOMPRESS:
+        if img.width * img.height < MIN_PIXELS_TO_RECOMPRESS:
             untouched_first.append((obj, raw_hash))
             untouched += 1
             continue
 
-        is_gray = pil.mode in ("L", "1")
+        is_gray = (out_mode == "L")
         pending.append((obj, current_bytes, {
-            "pil": pil,
+            "img": img,
+            "mode": out_mode,
             "max_long": max_long,
             "quality": gray_q if is_gray else color_q,
         }))
@@ -291,7 +311,7 @@ def recompress_pdf(input_path, output_path,
         "errored": errored,
         "duplicates_collapsed": duplicates_collapsed,
         "bytes_saved_dedup": bytes_saved_dedup,
-        "encoder": "cjpeg" if CJPEG else "pillow",
+        "encoder": "cjpeg" if CJPEG else "vips",
         "workers": workers,
         "elapsed_s": round(time.time() - t0, 2),
     }

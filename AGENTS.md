@@ -20,7 +20,7 @@ validate-pdf  (magic bytes + qpdf --requires-password)
    ↓
 compress()  →  spawn .venv/bin/python scripts/recompress.py
                 ├─ pikepdf walks every Image XObject
-                ├─ ThreadPoolExecutor:  resize (LANCZOS) + encode (mozjpeg)
+                ├─ ThreadPoolExecutor:  resize (pyvips lanczos3) + encode (mozjpeg)
                 ├─ write new bytes to objects     ← main thread only
                 └─ cross-page dedup of identical streams
    ↓
@@ -90,7 +90,7 @@ memory detection misreports).
 | File | Why it matters |
 |------|----------------|
 | `lib/compress.ts` | spawns Python, no-benefit guard, kicks off `fs.stat(input)` in parallel with the subprocess |
-| `scripts/recompress.py` | the actual compression — pikepdf + mozjpeg + parallel encode + dedup. Falls back to Pillow's libjpeg if mozjpeg's `cjpeg` isn't on PATH |
+| `scripts/recompress.py` | the actual compression — pikepdf + pyvips + mozjpeg + parallel encode + dedup. Falls back to libvips' `jpegsave` if mozjpeg's `cjpeg` isn't on PATH. Pillow stays as a thin decode bridge (pikepdf's `PdfImage.as_pil_image()` is the only viable decode API). |
 | `lib/runtime-limits.ts` | host-aware autotune of concurrency and file size cap; per-request memory pressure probe |
 | `lib/config.ts` | `BASE_PATH` — keep in sync with `next.config.ts`, `Dockerfile`, host reverse proxy |
 | `lib/errors.ts` | shared error-code union (server emits + client maps to copy) |
@@ -101,7 +101,7 @@ memory detection misreports).
 ## Local dev
 
 ```bash
-brew install qpdf mozjpeg pnpm
+brew install qpdf mozjpeg vips pnpm
 python3 -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
 pnpm install
 pnpm dev    # → http://localhost:3000/pdf_comp/
