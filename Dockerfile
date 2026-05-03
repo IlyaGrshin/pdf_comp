@@ -27,14 +27,14 @@ ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
 # System packages:
-#  ghostscript, qpdf — kept as fallbacks even though Maximum uses pikepdf path
+#  qpdf               — used by lib/validate-pdf.ts (--requires-password probe)
 #  python3 + venv     — for scripts/recompress.py (pikepdf+Pillow pipeline)
 #  libjpeg-turbo-progs — provides /usr/bin/cjpeg used by recompress.py for
 #                        better JPEG encoding than Pillow's default
 #  tini, ca-certificates — process supervisor + TLS roots
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      ghostscript qpdf tini ca-certificates \
+      qpdf tini ca-certificates \
       python3 python3-venv \
       libjpeg-turbo-progs \
  && rm -rf /var/lib/apt/lists/*

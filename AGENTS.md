@@ -101,7 +101,7 @@ memory detection misreports).
 ## Local dev
 
 ```bash
-brew install ghostscript qpdf mozjpeg pnpm
+brew install qpdf mozjpeg pnpm
 python3 -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
 pnpm install
 pnpm dev    # → http://localhost:3000/pdf_comp/
