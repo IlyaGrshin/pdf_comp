@@ -209,23 +209,35 @@ def recompress_pdf(input_path, output_path,
             untouched += 1
             continue
 
-        obj.write(new_bytes, filter=Name.DCTDecode)
-        obj["/ColorSpace"] = Name.DeviceGray if result["mode"] == "L" else Name.DeviceRGB
-        obj["/BitsPerComponent"] = 8
-        # PDF viewers read /Width and /Height from the dict, not from the JPEG
-        # SOF markers. After resize, both must be updated — otherwise the
-        # viewer stretches a shrunken bitmap.
-        obj["/Width"] = result["new_w"]
-        obj["/Height"] = result["new_h"]
-        if "/DecodeParms" in obj:
-            del obj["/DecodeParms"]
+        color_space = Name.DeviceGray if result["mode"] == "L" else Name.DeviceRGB
+        new_w = result["new_w"]
+        new_h = result["new_h"]
+
+        def _apply(stream):
+            stream.write(new_bytes, filter=Name.DCTDecode)
+            stream["/ColorSpace"] = color_space
+            stream["/BitsPerComponent"] = 8
+            # PDF viewers read /Width and /Height from the dict, not from the
+            # JPEG SOF markers. After resize, both must be updated — otherwise
+            # the viewer stretches a shrunken bitmap.
+            stream["/Width"] = new_w
+            stream["/Height"] = new_h
+            if "/DecodeParms" in stream:
+                del stream["/DecodeParms"]
+
+        _apply(obj)
+        # Mirror the recompressed bytes onto aliases. Phase 2 dedup will
+        # redirect references to the survivor and orphan the aliases — but
+        # pikepdf still serializes orphan streams. Without this mirror they
+        # would carry their ORIGINAL raw bytes (the very thing pre-decode
+        # dedup tried to skip recompressing), and the output bloats by
+        # `n_aliases × original_size`. Walt.pdf went 5 MB → 75 MB on this
+        # path before the fix.
+        for alias in obj_aliases:
+            _apply(alias)
 
         group = by_hash[hashlib.sha256(new_bytes).hexdigest()]
         group.append(obj)
-        # Aliases share `obj`'s raw bytes, not its post-recompress bytes — but
-        # they still need their references replaced. Putting them in the same
-        # by_hash group makes phase 2 redirect them onto `obj` (the survivor),
-        # so the rewritten dict on `obj` propagates everywhere.
         group.extend(obj_aliases)
         if result["did_downsample"]:
             downsampled += 1
