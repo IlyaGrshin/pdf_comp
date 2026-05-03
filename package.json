@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint && knip"
+    "lint": "eslint && knip",
+    "bench": "python bench/fixtures/generate.py && python bench/run.py && python bench/compare.py bench/results.json"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",
