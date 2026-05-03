@@ -47,6 +47,10 @@ MOZJPEG_CANDIDATES = [
 ]
 CJPEG = next((p for p in MOZJPEG_CANDIDATES if p and os.path.isfile(p)), None)
 
+# Pixel-area threshold below which JPEG header overhead + dict bloat exceed
+# any savings from re-encoding. ~100×100 — covers logos, icons, sprite tiles.
+MIN_PIXELS_TO_RECOMPRESS = 10_000
+
 
 def encode_jpeg(pil, quality):
     """Encode PIL image as JPEG; prefer cjpeg, fall back to Pillow."""
@@ -160,7 +164,7 @@ def recompress_pdf(input_path, output_path,
             h = int(obj.get("/Height", 0) or 0)
         except Exception:
             w = h = 0
-        if w > 0 and h > 0 and w * h < 10000:
+        if w > 0 and h > 0 and w * h < MIN_PIXELS_TO_RECOMPRESS:
             untouched_first.append((obj, raw_hash))
             untouched += 1
             continue
@@ -171,7 +175,7 @@ def recompress_pdf(input_path, output_path,
             errored += 1
             continue
 
-        if pil.width * pil.height < 10000:
+        if pil.width * pil.height < MIN_PIXELS_TO_RECOMPRESS:
             untouched_first.append((obj, raw_hash))
             untouched += 1
             continue
