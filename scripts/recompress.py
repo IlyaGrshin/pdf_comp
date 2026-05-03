@@ -44,10 +44,6 @@ import pyvips
 from pikepdf import Pdf, PdfImage, Name, Stream
 from PIL import Image  # Decode bridge ONLY — pikepdf hands us a PIL Image.
 
-# libvips caches operation results across calls; in a long batch (every
-# Image XObject in a 200-page deck) this holds decoded tiles in RAM. Disable.
-pyvips.cache_set_max(0)
-
 # Find mozjpeg's cjpeg (or libjpeg-turbo's cjpeg in PATH) — falls back to
 # libvips' JPEG encoder if neither is available.
 MOZJPEG_CANDIDATES = [
