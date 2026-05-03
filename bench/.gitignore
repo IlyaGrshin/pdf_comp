@@ -1,0 +1,4 @@
+fixtures/out/
+work/
+results.json
+results.*.json
