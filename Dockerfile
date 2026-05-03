@@ -41,18 +41,19 @@ RUN apt-get update \
 
 RUN groupadd -r app && useradd -r -g app -d /app app
 
+# Python venv with pikepdf + Pillow. Install BEFORE copying app code so the
+# venv layer is reused across builds when only the Next.js source changes.
+COPY --chown=app:app scripts/requirements.txt /app/scripts/requirements.txt
+RUN python3 -m venv /app/.venv \
+ && /app/.venv/bin/pip install --no-cache-dir --upgrade pip \
+ && /app/.venv/bin/pip install --no-cache-dir -r /app/scripts/requirements.txt \
+ && chown -R app:app /app/.venv
+
 # Copy Next standalone output + scripts dir.
 COPY --from=build --chown=app:app /app/.next/standalone ./
 COPY --from=build --chown=app:app /app/.next/static ./.next/static
 COPY --from=build --chown=app:app /app/public ./public
 COPY --from=build --chown=app:app /app/scripts ./scripts
-
-# Python venv with pikepdf + Pillow (pinned via scripts/requirements.txt).
-# Done as root, then chowned so non-root `app` user can execute it.
-RUN python3 -m venv /app/.venv \
- && /app/.venv/bin/pip install --no-cache-dir --upgrade pip \
- && /app/.venv/bin/pip install --no-cache-dir -r /app/scripts/requirements.txt \
- && chown -R app:app /app/.venv
 
 # Job tmp dir (writable by `app`).
 RUN mkdir -p /app/tmp && chown -R app:app /app/tmp
