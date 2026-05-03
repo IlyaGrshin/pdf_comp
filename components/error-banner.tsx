@@ -5,8 +5,6 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import type { ErrorCode } from "@/lib/errors";
 
-export type { ErrorCode };
-
 const MESSAGES: Record<ErrorCode, { title: string; description: string }> = {
   FILE_TOO_LARGE: {
     title: "File too large",

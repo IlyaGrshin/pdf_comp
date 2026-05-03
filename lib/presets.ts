@@ -1,6 +1,6 @@
 export type PresetId = "maximum";
 
-export type PikepdfArgs = {
+type PikepdfArgs = {
   colorQuality: number;       // JPEG quality for color images (1-100)
   grayQuality: number;        // JPEG quality for grayscale (smasks). Set higher.
   maxLongEdge: number;        // Downsample images larger than this on long edge.
@@ -8,18 +8,12 @@ export type PikepdfArgs = {
 
 export type Preset = {
   id: PresetId;
-  label: string;
-  description: string;
-  detail: string;
   pikepdf: PikepdfArgs;
 };
 
 export const PRESETS: Record<PresetId, Preset> = {
   maximum: {
     id: "maximum",
-    label: "Maximum",
-    description: "Preserves vectors, transparency and Figma effects.",
-    detail: "image-only recompress, no vector flattening",
     pikepdf: {
       colorQuality: 80,
       grayQuality: 92,
@@ -31,9 +25,8 @@ export const PRESETS: Record<PresetId, Preset> = {
   },
 };
 
-export const PRESET_IDS: PresetId[] = ["maximum"];
 export const DEFAULT_PRESET: PresetId = "maximum";
 
 export function isPresetId(value: unknown): value is PresetId {
-  return typeof value === "string" && (PRESET_IDS as string[]).includes(value);
+  return value === "maximum";
 }

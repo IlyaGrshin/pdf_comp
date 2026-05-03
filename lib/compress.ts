@@ -22,14 +22,14 @@ export class SubprocessTimeoutError extends Error {
   }
 }
 
-export type CompressOptions = {
+type CompressOptions = {
   inputPath: string;
   jobDir: string;
   preset: Preset;
   timeoutMs?: number;
 };
 
-export type CompressResult = {
+type CompressResult = {
   outputPath: string;
   originalBytes: number;
   compressedBytes: number;
@@ -92,7 +92,7 @@ export async function compress(opts: CompressOptions): Promise<CompressResult> {
   };
 }
 
-export function runProcess(
+function runProcess(
   cmd: string,
   args: string[],
   timeoutMs: number,

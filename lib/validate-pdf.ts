@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 
-export type ValidationError = "INVALID_PDF" | "PASSWORD_PROTECTED";
+type ValidationError = "INVALID_PDF" | "PASSWORD_PROTECTED";
 
 export async function validatePdf(filePath: string): Promise<ValidationError | null> {
   const handle = await fs.open(filePath, "r");

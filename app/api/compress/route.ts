@@ -3,10 +3,10 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
+import pLimit from "p-limit";
 import { z } from "zod";
 import { PRESETS, type PresetId, isPresetId } from "@/lib/presets";
 import { compress, SubprocessError, SubprocessTimeoutError } from "@/lib/compress";
-import { compressionLimit } from "@/lib/concurrency";
 import { createJob, deleteJob, startSweeper } from "@/lib/job-fs";
 import { validatePdf } from "@/lib/validate-pdf";
 import type { ErrorCode } from "@/lib/errors";
@@ -17,6 +17,7 @@ export const runtime = "nodejs";
 export const maxDuration = 900;
 
 const MAX_QUEUE_DEPTH = 1;
+const compressionLimit = pLimit(LIMITS.concurrency);
 
 startSweeper();
 
