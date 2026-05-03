@@ -11,6 +11,7 @@ const nextConfig: NextConfig = {
     },
   },
   async headers() {
+    const isProd = process.env.NODE_ENV === "production";
     return [
       {
         source: "/:path*",
@@ -38,7 +39,7 @@ const nextConfig: NextConfig = {
             key: "Content-Security-Policy",
             value: [
               "default-src 'self'",
-              `script-src 'self' 'unsafe-inline'${process.env.NODE_ENV === "production" ? "" : " 'unsafe-eval'"}`,
+              `script-src 'self' 'unsafe-inline'${isProd ? "" : " 'unsafe-eval'"}`,
               "style-src 'self' 'unsafe-inline'",
               "img-src 'self' data:",
               "font-src 'self' data:",
@@ -49,9 +50,7 @@ const nextConfig: NextConfig = {
               "object-src 'none'",
               // Skip in dev — would upgrade http://localhost to https:// and
               // break every subresource on the local dev server.
-              ...(process.env.NODE_ENV === "production"
-                ? ["upgrade-insecure-requests"]
-                : []),
+              ...(isProd ? ["upgrade-insecure-requests"] : []),
             ].join("; "),
           },
         ],
