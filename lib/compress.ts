@@ -1,12 +1,22 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { Preset } from "./presets";
 import { LIMITS } from "./runtime-limits";
 
 const DEFAULT_TIMEOUT_MS = 600_000;
 const STDERR_CAP = 1024 * 1024;
 const NO_BENEFIT_THRESHOLD = 0.95;
+
+// JPEG quality + max long-edge fed to scripts/recompress.py. 2400 px on the
+// long edge ≈ 144 DPI on a 1920×1080 slide — matches what iLovePDF medium
+// uses, sharp at 200% zoom. Lower = smaller file but visible upsampling at
+// zoom on big-image slides. Gray quality is set higher because soft masks
+// are more sensitive to JPEG ringing on edges.
+const RECOMPRESS_ARGS = {
+  colorQuality: 80,
+  grayQuality: 92,
+  maxLongEdge: 2400,
+} as const;
 
 export class SubprocessError extends Error {
   constructor(public exitCode: number | null, public stderrTail: string) {
@@ -26,7 +36,6 @@ type CompressOptions = {
   inputPath: string;
   inputBytes: number;
   jobDir: string;
-  preset: Preset;
   timeoutMs?: number;
 };
 
@@ -43,7 +52,6 @@ export async function compress(opts: CompressOptions): Promise<CompressResult> {
   const startedAt = Date.now();
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const finalPath = path.join(opts.jobDir, "final.pdf");
-  const args = opts.preset.pikepdf;
 
   // turbopackIgnore: tells the Next.js build not to traverse .venv during
   // module-graph analysis. The directory contains symlinks pointing outside
@@ -61,9 +69,9 @@ export async function compress(opts: CompressOptions): Promise<CompressResult> {
       scriptPath,
       opts.inputPath,
       finalPath,
-      String(args.colorQuality),
-      String(args.grayQuality),
-      String(args.maxLongEdge),
+      String(RECOMPRESS_ARGS.colorQuality),
+      String(RECOMPRESS_ARGS.grayQuality),
+      String(RECOMPRESS_ARGS.maxLongEdge),
       String(workers),
     ],
     timeoutMs,

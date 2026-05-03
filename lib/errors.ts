@@ -2,7 +2,6 @@ export type ErrorCode =
   | "FILE_TOO_LARGE"
   | "INVALID_PDF"
   | "PASSWORD_PROTECTED"
-  | "INVALID_PRESET"
   | "MISSING_FILE"
   | "BUSY"
   | "COMPRESS_FAILED"
@@ -15,7 +14,6 @@ export const ERROR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   "FILE_TOO_LARGE",
   "INVALID_PDF",
   "PASSWORD_PROTECTED",
-  "INVALID_PRESET",
   "MISSING_FILE",
   "BUSY",
   "COMPRESS_FAILED",

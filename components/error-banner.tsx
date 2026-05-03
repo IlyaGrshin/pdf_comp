@@ -18,10 +18,6 @@ const MESSAGES: Record<ErrorCode, { title: string; description: string }> = {
     title: "Password-protected PDF",
     description: "Remove the password and try again.",
   },
-  INVALID_PRESET: {
-    title: "Unknown compression mode",
-    description: "Refresh the page and try again.",
-  },
   MISSING_FILE: {
     title: "No file selected",
     description: "Drop a PDF into the upload area and try again.",

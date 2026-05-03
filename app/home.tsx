@@ -6,7 +6,6 @@ import { Uploader } from "@/components/uploader";
 import { ResultCard, type CompressResponse } from "@/components/result-card";
 import { ErrorBanner } from "@/components/error-banner";
 import { Progress, ProgressLabel, ProgressValue } from "@/components/ui/progress";
-import { DEFAULT_PRESET } from "@/lib/presets";
 import { ERROR_CODES, type ErrorCode } from "@/lib/errors";
 import { BASE_PATH } from "@/lib/config";
 
@@ -35,7 +34,6 @@ export function Home({ maxBytes }: Props) {
   const startUpload = useCallback((picked: File) => {
     const fd = new FormData();
     fd.append("file", picked);
-    fd.append("preset", DEFAULT_PRESET);
 
     const xhr = new XMLHttpRequest();
     xhrRef.current = xhr;

@@ -8,7 +8,6 @@ import { cn } from "@/lib/utils";
 
 export type CompressResponse = {
   jobId: string;
-  preset: string;
   originalBytes: number;
   compressedBytes: number;
   ratio: number;

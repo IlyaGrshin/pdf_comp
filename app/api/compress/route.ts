@@ -4,8 +4,6 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import pLimit from "p-limit";
-import { z } from "zod";
-import { PRESETS, type PresetId, isPresetId } from "@/lib/presets";
 import { compress, SubprocessError, SubprocessTimeoutError } from "@/lib/compress";
 import { createJob, deleteJob, startSweeper } from "@/lib/job-fs";
 import { validatePdf } from "@/lib/validate-pdf";
@@ -20,8 +18,6 @@ const MAX_QUEUE_DEPTH = 1;
 const compressionLimit = pLimit(LIMITS.concurrency);
 
 startSweeper();
-
-const presetSchema = z.string().refine(isPresetId, { message: "INVALID_PRESET" });
 
 function err(code: ErrorCode, status: number, init?: ResponseInit): Response {
   return Response.json({ error: code }, { status, ...init });
@@ -57,7 +53,6 @@ export async function POST(req: Request) {
   }
 
   const file = formData.get("file");
-  const presetRaw = formData.get("preset");
 
   if (!(file instanceof File) || file.size === 0) {
     return err("MISSING_FILE", 400);
@@ -65,13 +60,6 @@ export async function POST(req: Request) {
   if (file.size > LIMITS.maxBytes) {
     return err("FILE_TOO_LARGE", 413);
   }
-
-  const presetParse = presetSchema.safeParse(presetRaw);
-  if (!presetParse.success) {
-    return err("INVALID_PRESET", 400);
-  }
-  const presetId = presetParse.data as PresetId;
-  const preset = PRESETS[presetId];
 
   const job = await createJob();
   const inputPath = path.join(job.dir, "input.pdf");
@@ -90,12 +78,11 @@ export async function POST(req: Request) {
     }
 
     const result = await compressionLimit(() =>
-      compress({ inputPath, inputBytes: file.size, jobDir: job.dir, preset }),
+      compress({ inputPath, inputBytes: file.size, jobDir: job.dir }),
     );
 
     return Response.json({
       jobId: job.id,
-      preset: presetId,
       originalBytes: result.originalBytes,
       compressedBytes: result.compressedBytes,
       ratio: result.ratio,
