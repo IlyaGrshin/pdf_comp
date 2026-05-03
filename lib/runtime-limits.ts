@@ -1,9 +1,10 @@
 import os from "node:os";
 import { readFileSync } from "node:fs";
 
-// Empirical per-job RAM peak — pikepdf decodes images via Pillow into RAM,
-// LANCZOS resize temporarily holds source + destination. Worst case observed
-// on 4650×6370 RGB images is ~700 MB; round to 800 for safety margin.
+// Empirical per-job RAM peak — pikepdf decodes images via Pillow into RAM
+// (the decode bridge), then pyvips holds source + destination during the
+// lanczos3 resize. Worst case observed on 4650×6370 RGB images is ~700 MB;
+// round to 800 for safety margin.
 const PER_JOB_BUDGET = 800 * 1024 * 1024;
 
 // OS + Node + Python subprocess + Docker daemon + Caddy baseline RSS.
@@ -46,7 +47,7 @@ function compute() {
   const memSlots = Math.max(1, Math.floor(memBudget / PER_JOB_BUDGET));
   const concurrency = Math.min(memSlots, cores, HARD_CONCURRENCY_CAP);
 
-  // Single-file ceiling: leave ~4× headroom for Pillow decode + resize peak.
+  // Single-file ceiling: leave ~4× headroom for decode + resize peak.
   const maxBytes = Math.min(HARD_FILE_CAP, Math.floor(totalMem / 4));
 
   return { concurrency, maxBytes, totalMem, cores };

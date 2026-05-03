@@ -28,21 +28,25 @@ ENV HOSTNAME=0.0.0.0
 
 # System packages:
 #  qpdf               — used by lib/validate-pdf.ts (--requires-password probe)
-#  python3 + venv     — for scripts/recompress.py (pikepdf+Pillow pipeline)
+#  python3 + venv     — for scripts/recompress.py (pikepdf + pyvips pipeline)
+#  libvips42          — runtime for pyvips (the wheel does NOT bundle libvips)
 #  libjpeg-turbo-progs — provides /usr/bin/cjpeg used by recompress.py for
-#                        better JPEG encoding than Pillow's default
+#                        better JPEG encoding than libvips' default
 #  tini, ca-certificates — process supervisor + TLS roots
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       qpdf tini ca-certificates \
       python3 python3-venv \
+      libvips42 \
       libjpeg-turbo-progs \
  && rm -rf /var/lib/apt/lists/*
 
 RUN groupadd -r app && useradd -r -g app -d /app app
 
-# Python venv with pikepdf + Pillow. Install BEFORE copying app code so the
-# venv layer is reused across builds when only the Next.js source changes.
+# Python venv with pikepdf + pyvips (Pillow stays as a thin decode bridge —
+# pikepdf's PdfImage.as_pil_image() is the only viable decode API). Install
+# BEFORE copying app code so the venv layer is reused across builds when
+# only the Next.js source changes.
 COPY --chown=app:app scripts/requirements.txt /app/scripts/requirements.txt
 RUN python3 -m venv /app/.venv \
  && /app/.venv/bin/pip install --no-cache-dir --upgrade pip \
