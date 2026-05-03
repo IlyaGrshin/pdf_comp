@@ -16,11 +16,13 @@ scale well. Decode and pikepdf object writes stay on the main thread
 (pikepdf is not thread-safe for mutation, and PdfImage decode reads
 object state).
 
-Pillow is a thin decode bridge only — pikepdf's PdfImage.as_pil_image()
-is the sole supported decode API; alternatives (extract_to) raise on
-indexed palettes / predictor FlateDecode / custom /Decode arrays, which
-Figma exports use heavily. Every operation downstream of the bridge runs
-on pyvips.
+Pillow is reached only through pikepdf's PdfImage.as_pil_image() — pikepdf
+requires it as a hard dep and uses it internally for image decoding.
+Alternatives (extract_to) raise on indexed palettes / predictor FlateDecode
+/ custom /Decode arrays, which Figma exports use heavily; using extract_to
++ pyvips.new_from_buffer also benchmarked 3x slower because pikepdf has to
+PNG-encode FlateDecode buffers that pyvips then re-decodes. Every operation
+downstream of as_pil_image() runs on pyvips.
 
 NEVER touches: vectors, transparency groups, soft masks (their pixel content
 is processed via the Image XObject path, but blend modes / opacity / group
@@ -42,7 +44,8 @@ from concurrent.futures import ThreadPoolExecutor
 import pikepdf
 import pyvips
 from pikepdf import Pdf, PdfImage, Name, Stream
-from PIL import Image  # Decode bridge ONLY — pikepdf hands us a PIL Image.
+# pikepdf transitively requires Pillow — PdfImage.as_pil_image() returns a
+# PIL.Image and we operate on it via duck-typing (no PIL import needed here).
 
 # Find mozjpeg's cjpeg (or libjpeg-turbo's cjpeg in PATH) — falls back to
 # libvips' JPEG encoder if neither is available.
