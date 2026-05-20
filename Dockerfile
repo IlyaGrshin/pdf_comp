@@ -1,18 +1,27 @@
 # syntax=docker/dockerfile:1.7
 ARG NODE_VERSION=22
 
+# Pin pnpm explicitly. "pnpm@latest" via corepack pulled in a release with
+# strict-dep-builds=true defaulting on, which made --frozen-lockfile error
+# even with the build scripts explicitly listed in ignoredBuiltDependencies.
+ARG PNPM_VERSION=10.9.0
+
 # --- Node deps ---
 FROM node:${NODE_VERSION}-bookworm-slim AS deps
+ARG PNPM_VERSION
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+# --ignore-scripts: matches the repo intent (msw/sharp/unrs-resolver
+# postinstall scripts are not needed; native bindings ship as prebuilds).
 RUN --mount=type=cache,id=pnpm,target=/root/.local/share/pnpm/store \
-    pnpm install --frozen-lockfile
+    pnpm install --frozen-lockfile --ignore-scripts
 
 # --- Next.js build ---
 FROM node:${NODE_VERSION}-bookworm-slim AS build
+ARG PNPM_VERSION
 WORKDIR /app
-RUN corepack enable && corepack prepare pnpm@latest --activate
+RUN corepack enable && corepack prepare pnpm@${PNPM_VERSION} --activate
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
