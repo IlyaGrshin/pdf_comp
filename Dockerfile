@@ -1,10 +1,9 @@
 # syntax=docker/dockerfile:1.7
 ARG NODE_VERSION=22
 
-# Pin pnpm explicitly. "pnpm@latest" via corepack pulled in a release with
-# strict-dep-builds=true defaulting on, which made --frozen-lockfile error
-# even with the build scripts explicitly listed in ignoredBuiltDependencies.
-ARG PNPM_VERSION=10.9.0
+# Pin pnpm explicitly so corepack doesn't pull in a fresh release with
+# behavior changes on each build. Bump deliberately when desired.
+ARG PNPM_VERSION=11.1.3
 
 # --- Node deps ---
 FROM node:${NODE_VERSION}-bookworm-slim AS deps
