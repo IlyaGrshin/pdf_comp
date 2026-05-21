@@ -32,10 +32,13 @@ jobs:
           path: base
 
       - name: Install system deps
+        # libvips42 is required by pyvips at runtime (the wheel does not
+        # bundle libvips). Mirrors the Dockerfile. Harmless for base venvs
+        # that still use Pillow — they ignore the system lib.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            qpdf libjpeg-turbo-progs poppler-utils time
+            qpdf libjpeg-turbo-progs poppler-utils time libvips42
 
       - name: Set up Python
         uses: actions/setup-python@v6
