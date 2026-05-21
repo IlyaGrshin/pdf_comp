@@ -119,9 +119,17 @@ def compute_ssim(in_pdf: Path, out_pdf: Path, dpi: int) -> float:
         b = render_pdf(out_pdf, td_path / "b", dpi)
         if not a or not b:
             return float("nan")
-        n = min(len(a), len(b))
+        if len(a) != len(b):
+            # recompress.py only mutates Image XObjects; page count never
+            # changes. A mismatch means severe corruption (truncated output,
+            # rasterizer bug). Raise so the bench surfaces it instead of
+            # averaging away the missing pages.
+            raise RuntimeError(
+                f"page count mismatch for {in_pdf.name}: "
+                f"input has {len(a)} pages, output has {len(b)}"
+            )
         scores: list[float] = []
-        for ap, bp in zip(a[:n], b[:n]):
+        for ap, bp in zip(a, b):
             ai = np.asarray(Image.open(ap).convert("RGB"))
             bi = np.asarray(Image.open(bp).convert("RGB"))
             # pdftoppm output can drift by 1px between runs — clip to common.

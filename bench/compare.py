@@ -15,8 +15,11 @@ import json
 import sys
 from pathlib import Path
 
-# Output > 5% larger than baseline = compression regressed.
-RATIO_FAIL_DELTA = 0.05
+# Output > 5% larger than baseline = compression regressed. Computed as
+# relative change (new / base - 1), not absolute pp delta — a +0.04 jump
+# on a 0.10 baseline is a 40% relative regression on a very compressible
+# fixture and must trip the gate.
+RATIO_FAIL_RELATIVE = 0.05
 # SSIM dropped > 0.005 = visible quality regression (designer's eye).
 SSIM_FAIL_DELTA = 0.005
 
@@ -93,7 +96,7 @@ def main() -> None:
             ssim_cell += f" ({fmt_abs(n['ssim'], b['ssim'], 4)})"
             wall_cell += f" ({fmt_pct(n['wall_s'], b['wall_s'])})"
             cpu_cell += f" ({fmt_pct(n['cpu_s'], b['cpu_s'])})"
-            if (n["ratio"] - b["ratio"]) > RATIO_FAIL_DELTA:
+            if b["ratio"] > 0 and (n["ratio"] / b["ratio"] - 1) > RATIO_FAIL_RELATIVE:
                 failures.append(f"{name}: ratio {b['ratio']:.3f} -> {n['ratio']:.3f}")
             if (b["ssim"] - n["ssim"]) > SSIM_FAIL_DELTA:
                 failures.append(f"{name}: SSIM {b['ssim']:.4f} -> {n['ssim']:.4f}")
