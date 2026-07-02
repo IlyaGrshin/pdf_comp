@@ -49,10 +49,9 @@ streamed download  →  job dir deleted on close
 - **pikepdf is NOT thread-safe for writes.** Only the pure-CPU phase
   (decode → resize → encode) runs in workers. Object writes stay on main.
 - **Don't add `/sRGB` even "for testing".** It's a known footgun.
-- **`BASE_PATH` lives in four places — keep in sync.** `lib/config.ts`,
-  `basePath` in `next.config.ts`, `HEALTHCHECK` URL in `Dockerfile`, the
-  `location` matcher in the host's reverse-proxy config. Set to `""` to mount
-  at the apex.
+- **`BASE_PATH` lives in three places — keep in sync.** `lib/config.ts`,
+  `basePath` in `next.config.ts`, and the `location` matcher in the host's
+  reverse-proxy config. Set to `""` to mount at the apex.
 
 ## Conventions
 
@@ -92,7 +91,8 @@ memory detection misreports).
 | `lib/compress.ts` | spawns Python, no-benefit guard, kicks off `fs.stat(input)` in parallel with the subprocess |
 | `scripts/recompress.py` | the actual compression — pikepdf + mozjpeg + parallel encode + dedup. Falls back to Pillow's libjpeg if mozjpeg's `cjpeg` isn't on PATH |
 | `lib/runtime-limits.ts` | host-aware autotune of concurrency and file size cap; per-request memory pressure probe |
-| `lib/config.ts` | `BASE_PATH` — keep in sync with `next.config.ts`, `Dockerfile`, host reverse proxy |
+| `lib/config.ts` | `BASE_PATH` — keep in sync with `next.config.ts` and the host's reverse proxy |
+| `systemd/pdf-comp.service` | service unit — `MemoryMax=1700M`, hardening, `Restart=always`. Installed by `scripts/deploy.sh` |
 | `lib/errors.ts` | shared error-code union (server emits + client maps to copy) |
 | `app/page.tsx` | server shell — reads LIMITS, hands `maxBytes` to the client to avoid first-paint flash |
 | `app/home.tsx` | client state machine: idle → uploading → processing → done/error |
@@ -120,28 +120,49 @@ layer):
 ./scripts/deploy.sh root@vps.example.com
 ```
 
+Native (no Docker) — Node + Python run directly under systemd. Chose this
+over the previous containerized layout because `dockerd + containerd` cost
+~70 MB idle for zero functional benefit on a single-service host.
+
 What it does (idempotent — safe to re-run as the update flow):
-1. rsyncs to `/opt/pdf-comp`
-2. installs Docker if missing, creates 2 GB swap if missing
-3. `docker compose up -d --build` — app bound to `127.0.0.1:3127` (override
-   via `PDF_COMP_PORT`)
-4. prints a ready-to-paste nginx and Caddy snippet for the host's reverse proxy
+1. Builds Next.js standalone **locally** (needs Node 22 + pnpm on your
+   machine). The host doesn't need pnpm or Next's build toolchain.
+2. Installs on the host via apt: nodejs 22 (from NodeSource), qpdf,
+   libjpeg-turbo-progs, python3-venv, rsync.
+3. Creates the `app` service user + `/opt/pdf-comp/current/`.
+4. rsyncs `.next/standalone` + `.next/static` + `public` + `scripts` to
+   the host; builds `.venv` there from `scripts/requirements.txt`.
+5. Installs `/etc/systemd/system/pdf-comp.service` + `/etc/pdf-comp.env`,
+   enables and restarts the service (listens on `127.0.0.1:3127`,
+   override with `PDF_COMP_PORT`).
+6. Creates a 2 GB swap file if the host has none.
+7. Prints a ready-to-paste nginx and Caddy snippet for the host's reverse
+   proxy.
 
 We do **not** run a reverse proxy ourselves — the production hosts already
 have nginx/Caddy serving the apex. Adding our own would conflict on 80/443.
+
+Requires **cgroup v2** on the host (default on Debian 12+, Ubuntu 22.04+).
+`MemoryHigh` is a v2-only feature; on v1 the unit would still boot but
+memory throttling would degrade to `MemoryMax` alone.
 
 ## Self-healing memory pressure
 
 Four layers, no monitoring required:
 
 1. Pre-check in API: `/proc/meminfo` `MemAvailable` < 500 MB → 503 BUSY.
-2. cgroup memory limit (`mem_limit: 1700m`) — kernel kills the worst offender
-   (usually Python) inside the container; Node sees `SubprocessError`, returns
-   500 to the user, container stays up.
-3. `restart: unless-stopped` on the container — covers the rare case where
-   the OOM target is Node (PID 1).
-4. `logging.options.max-size=10m` × 3 — prevents dockerd's json-file driver
-   from filling disk over months.
+2. systemd cgroup limits (`MemoryHigh=1400M` throttles/reclaims before
+   `MemoryMax=1700M` OOM-kills). Python is usually the target; Node
+   sees `SubprocessError`, returns 500 to the user, service stays up.
+3. `Restart=always` in the unit — covers the rare case where the OOM
+   target is Node itself.
+4. journald default rotation (`SystemMaxUse` on the host, typically
+   10% of `/var/log`) — prevents log growth from filling disk.
+
+The 1400/1700 pair pins Node (`--max-old-space-size=768`) + Python worst-
+case (~800 MB) with a small envelope, and leaves ~300 MB on a 2 GB host
+for the OS + reverse proxy. `MALLOC_ARENA_MAX=2` in `/etc/pdf-comp.env`
+prevents glibc from handing each libuv/Python worker its own 64 MB arena.
 
 ## Privacy guarantees
 

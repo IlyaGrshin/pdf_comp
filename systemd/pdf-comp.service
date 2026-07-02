@@ -1,0 +1,47 @@
+[Unit]
+Description=pdf-comp — private PDF compression service
+Documentation=https://github.com/IlyaGrshin/pdf_comp
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=app
+Group=app
+WorkingDirectory=/opt/pdf-comp/current
+EnvironmentFile=/etc/pdf-comp.env
+ExecStart=/usr/bin/node server.js
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+KillSignal=SIGTERM
+
+# Memory limits — cgroup v2, kernel-enforced. Replaces the old
+# Docker mem_limit: 1700m. MemoryHigh throttles/reclaims before
+# MemoryMax hard-kills, so a runaway Python worker is squeezed
+# before the whole cgroup dies. On a 2 GB host this leaves ~300 MB
+# for the OS + reverse proxy.
+MemoryHigh=1400M
+MemoryMax=1700M
+MemorySwapMax=2G
+
+# Hardening. The service only needs to write to its own tmp dir;
+# everything else is read-only.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pdf-comp/current/tmp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
