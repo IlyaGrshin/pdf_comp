@@ -129,7 +129,7 @@ What it does (idempotent — safe to re-run as the update flow):
    machine). The host doesn't need pnpm or Next's build toolchain.
 2. Installs on the host via apt: nodejs 22 (from NodeSource), qpdf,
    libjpeg-turbo-progs, python3-venv, rsync.
-3. Creates the `app` service user + `/opt/pdf-comp/current/`.
+3. Creates the `pdf-comp` service user + `/opt/pdf-comp/current/`.
 4. rsyncs `.next/standalone` + `.next/static` + `public` + `scripts` to
    the host; builds `.venv` there from `scripts/requirements.txt`.
 5. Installs `/etc/systemd/system/pdf-comp.service` + `/etc/pdf-comp.env`,

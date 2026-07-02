@@ -13,10 +13,14 @@ type Job = {
 };
 
 export async function createJob(): Promise<Job> {
-  await fs.mkdir(ROOT, { recursive: true });
+  // 0700 on the ROOT and per-job dirs — uploaded PDFs must not be
+  // readable by other local users on the host. systemd `UMask=077`
+  // enforces the same at the process level; this belt-and-suspenders
+  // survives dev environments and non-systemd hosts.
+  await fs.mkdir(ROOT, { recursive: true, mode: 0o700 });
   const id = randomUUID();
   const dir = path.join(ROOT, id);
-  await fs.mkdir(dir);
+  await fs.mkdir(dir, { mode: 0o700 });
   return { id, dir };
 }
 

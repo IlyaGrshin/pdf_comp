@@ -5,7 +5,7 @@ import { pipeline } from "node:stream/promises";
 import type { ReadableStream as NodeReadableStream } from "node:stream/web";
 import pLimit from "p-limit";
 import { compress, SubprocessError, SubprocessTimeoutError } from "@/lib/compress";
-import { createJob, deleteJob, startSweeper } from "@/lib/job-fs";
+import { createJob, deleteJob } from "@/lib/job-fs";
 import { validatePdf } from "@/lib/validate-pdf";
 import type { ErrorCode } from "@/lib/errors";
 import { LIMITS, availableMemory, MEMORY_PRESSURE_FLOOR } from "@/lib/runtime-limits";
@@ -16,8 +16,6 @@ export const maxDuration = 900;
 
 const MAX_QUEUE_DEPTH = 1;
 const compressionLimit = pLimit(LIMITS.concurrency);
-
-startSweeper();
 
 function err(code: ErrorCode, status: number, init?: ResponseInit): Response {
   return Response.json({ error: code }, { status, ...init });
@@ -66,9 +64,11 @@ export async function POST(req: Request) {
 
   try {
     // Stream the upload to disk; arrayBuffer() would hold a 1 GB file twice.
+    // mode: 0o600 keeps the uploaded PDF unreadable by other local users
+    // (defense-in-depth alongside UMask=077 in the systemd unit).
     await pipeline(
       Readable.fromWeb(file.stream() as unknown as NodeReadableStream<Uint8Array>),
-      createWriteStream(inputPath),
+      createWriteStream(inputPath, { mode: 0o600 }),
     );
 
     const validationError = await validatePdf(inputPath);

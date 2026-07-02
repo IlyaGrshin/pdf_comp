@@ -10,7 +10,7 @@
 #   1. Builds Next.js standalone locally (needs Node 22 + pnpm here).
 #   2. Installs apt packages on the host: nodejs 22, qpdf,
 #      libjpeg-turbo-progs, python3-venv.
-#   3. Creates the `app` service user + /opt/pdf-comp/current.
+#   3. Creates the `pdf-comp` service user + /opt/pdf-comp/current.
 #   4. rsyncs .next/standalone + .next/static + public + scripts to
 #      the host, then builds a Python venv there.
 #   5. Installs /etc/systemd/system/pdf-comp.service and /etc/pdf-comp.env,
@@ -57,8 +57,11 @@ set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
 # Node 22 from NodeSource — Debian bookworm ships 18, which is too old
-# for Next.js 16.
-if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -c2- | cut -d. -f1)" -lt 22 ]; then
+# for Next.js 16. Always install: the systemd unit hard-codes
+# `/usr/bin/node`, and skipping install just because an nvm/asdf node
+# is on PATH would leave the service pointing at a missing binary.
+if ! dpkg -l nodejs 2>/dev/null | grep -q '^ii  nodejs' \
+   || [ "$(/usr/bin/node -v 2>/dev/null | cut -c2- | cut -d. -f1)" -lt 22 ]; then
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
     apt-get install -y --no-install-recommends nodejs >/dev/null
 fi
@@ -69,13 +72,22 @@ apt-get install -y --no-install-recommends \
 
 # Service user. --system: no login, no home, no aging. Home points at
 # the install dir so relative paths still work if anyone su's in.
-if ! id app >/dev/null 2>&1; then
-    useradd --system --home /opt/pdf-comp --shell /usr/sbin/nologin app
+# Named `pdf-comp` (not the generic `app`) to avoid inheriting an
+# existing account belonging to another service on the host.
+if ! id pdf-comp >/dev/null 2>&1; then
+    useradd --system --home /opt/pdf-comp --shell /usr/sbin/nologin pdf-comp
 fi
 
 mkdir -p /opt/pdf-comp/current/tmp
-chown -R app:app /opt/pdf-comp
+chown -R pdf-comp:pdf-comp /opt/pdf-comp
 REMOTE_PROVISION
+
+step "Stopping service before mutating install tree"
+# Without this, rsync --delete replaces files that node/python may be
+# reading, and clients hitting the service during the swap can see 500s
+# or half-updated scripts. Downtime here is a few seconds on a small
+# host. Ignore failure — first-time installs have no unit yet.
+ssh "$REMOTE" "systemctl stop pdf-comp.service 2>/dev/null || true"
 
 step "Rsyncing build to $REMOTE:$INSTALL_DIR"
 # --delete on the top level would wipe the on-host .venv every deploy;
@@ -84,7 +96,7 @@ rsync -az --delete \
     --exclude=tmp \
     --exclude=.venv \
     "$STAGE/" "$REMOTE:$INSTALL_DIR/"
-ssh "$REMOTE" "chown -R app:app $INSTALL_DIR"
+ssh "$REMOTE" "chown -R pdf-comp:pdf-comp $INSTALL_DIR"
 
 step "Refreshing Python venv on host"
 ssh "$REMOTE" bash <<REMOTE_VENV
@@ -95,7 +107,7 @@ if [ ! -x .venv/bin/python ]; then
 fi
 .venv/bin/pip install --no-cache-dir --disable-pip-version-check --upgrade pip >/dev/null
 .venv/bin/pip install --no-cache-dir --disable-pip-version-check -r scripts/requirements.txt >/dev/null
-chown -R app:app .venv
+chown -R pdf-comp:pdf-comp .venv
 REMOTE_VENV
 
 step "Installing systemd unit"
@@ -123,7 +135,7 @@ chmod 600 /etc/pdf-comp.env
 
 systemctl daemon-reload
 systemctl enable pdf-comp.service >/dev/null
-systemctl restart pdf-comp.service
+systemctl start pdf-comp.service
 sleep 1
 systemctl --no-pager --lines=0 status pdf-comp.service | head -8
 REMOTE_SYSTEMD

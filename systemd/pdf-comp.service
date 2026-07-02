@@ -8,8 +8,8 @@ StartLimitBurst=5
 
 [Service]
 Type=simple
-User=app
-Group=app
+User=pdf-comp
+Group=pdf-comp
 WorkingDirectory=/opt/pdf-comp/current
 EnvironmentFile=/etc/pdf-comp.env
 ExecStart=/usr/bin/node server.js
@@ -17,6 +17,12 @@ Restart=always
 RestartSec=5
 TimeoutStopSec=15
 KillSignal=SIGTERM
+
+# Uploaded PDFs land in cwd/tmp/<jobId>/. Force 0700 dirs / 0600 files
+# so a co-tenant local user on the host can't read someone's document
+# during the processing/download window. The app also passes explicit
+# modes to mkdir/createWriteStream — this is defense-in-depth.
+UMask=077
 
 # Memory limits — cgroup v2, kernel-enforced. Replaces the old
 # Docker mem_limit: 1700m. MemoryHigh throttles/reclaims before

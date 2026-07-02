@@ -43,7 +43,10 @@ fi
 
 step "apt packages"
 export DEBIAN_FRONTEND=noninteractive
-if ! command -v node >/dev/null 2>&1 || [ "$(node -v | cut -c2- | cut -d. -f1)" -lt 22 ]; then
+# Always resolve Node from the apt package — the systemd unit hard-codes
+# `/usr/bin/node`, so we can't rely on a nvm/asdf install on PATH.
+if ! dpkg -l nodejs 2>/dev/null | grep -q '^ii  nodejs' \
+   || [ "$(/usr/bin/node -v 2>/dev/null | cut -c2- | cut -d. -f1)" -lt 22 ]; then
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
     apt-get install -y --no-install-recommends nodejs >/dev/null
 fi
@@ -57,8 +60,11 @@ if ! command -v pnpm >/dev/null 2>&1; then
 fi
 
 step "Service user + install dir"
-if ! id app >/dev/null 2>&1; then
-    useradd --system --home /opt/pdf-comp --shell /usr/sbin/nologin app
+# Dedicated user name (not the generic `app`) so a co-hosted service
+# can't accidentally inherit our filesystem/process privileges by
+# reusing an existing account.
+if ! id pdf-comp >/dev/null 2>&1; then
+    useradd --system --home /opt/pdf-comp --shell /usr/sbin/nologin pdf-comp
 fi
 mkdir -p "$INSTALL_DIR/tmp"
 
@@ -66,6 +72,11 @@ step "Build (this can take a few minutes on a small VPS)"
 cd "$SRC_DIR"
 pnpm install --frozen-lockfile
 pnpm build
+
+step "Stopping service before mutating install tree"
+# Prevents mid-request file swap on the update flow. First-time
+# installs have no unit yet — swallow the error.
+systemctl stop pdf-comp.service 2>/dev/null || true
 
 step "Staging to $INSTALL_DIR"
 # Keep .venv and tmp across re-runs (they live inside INSTALL_DIR).
@@ -85,7 +96,7 @@ if [ ! -x .venv/bin/python ]; then
 fi
 .venv/bin/pip install --no-cache-dir --disable-pip-version-check --upgrade pip >/dev/null
 .venv/bin/pip install --no-cache-dir --disable-pip-version-check -r scripts/requirements.txt >/dev/null
-chown -R app:app /opt/pdf-comp
+chown -R pdf-comp:pdf-comp /opt/pdf-comp
 
 step "systemd unit"
 install -m 0644 "$SRC_DIR/systemd/pdf-comp.service" /etc/systemd/system/pdf-comp.service
@@ -103,7 +114,7 @@ ENV_EOF
 chmod 600 /etc/pdf-comp.env
 systemctl daemon-reload
 systemctl enable pdf-comp.service >/dev/null
-systemctl restart pdf-comp.service
+systemctl start pdf-comp.service
 
 cat <<EOF
 
