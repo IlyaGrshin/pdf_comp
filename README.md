@@ -15,23 +15,30 @@ domain.
 
 ## Deploy
 
-On a fresh Linux VPS that already runs nginx (or another reverse proxy):
+Native (no Docker). Node + Python run directly under systemd on the host —
+that saves ~70 MB idle RAM compared to the containerized layout, which on
+a 2 GB VPS is meaningful headroom.
+
+On a fresh Linux VPS (Debian 12+ / Ubuntu 22.04+, cgroup v2) that already
+runs nginx or another reverse proxy:
 
 ```bash
 git clone https://github.com/IlyaGrshin/pdf_comp.git
-cd pdf-comp
+cd pdf_comp
 sudo ./scripts/setup.sh
 ```
 
-The script sets up a 2 GB swap file, installs Docker if missing, builds the
-image, and starts the app on `127.0.0.1:3127`. It prints an nginx
-`location /pdf_comp/ { ... }` block at the end — paste it into the
-appropriate `server { ... }` block on the host and `systemctl reload nginx`.
+The script sets up a 2 GB swap file, installs Node 22 + qpdf +
+libjpeg-turbo, builds Next.js standalone in place, drops
+`pdf-comp.service` into systemd, and starts the app on `127.0.0.1:3127`.
+It prints an nginx `location /pdf_comp/ { ... }` block at the end —
+paste it into the appropriate `server { ... }` block on the host and
+`systemctl reload nginx`.
 
 Updates later:
 
 ```bash
-git pull && sudo docker compose up -d --build
+git pull && sudo ./scripts/setup.sh
 ```
 
 ### Alternative: rsync from local (no GitHub)
@@ -40,9 +47,9 @@ git pull && sudo docker compose up -d --build
 ./scripts/deploy.sh root@your-vps
 ```
 
-This rsyncs the project from your laptop to `/opt/pdf-comp` on the VPS
-and runs the same bootstrap remotely. Useful if you'd rather not publish
-the code or set up a deploy key on the VPS.
+Builds locally, rsyncs `.next/standalone` + `scripts` to `/opt/pdf-comp/`
+on the VPS, and installs the same systemd unit remotely. Useful if you'd
+rather not put the source or a build toolchain on the VPS.
 
 ## Local dev
 

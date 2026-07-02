@@ -1,20 +1,23 @@
 #!/usr/bin/env bash
-# Run on the VPS, inside a freshly-cloned project directory.
+# Run on the VPS itself, inside a freshly-cloned project directory.
+# Use scripts/deploy.sh instead if you're pushing from your laptop.
 #
 # Usage:
 #   sudo ./scripts/setup.sh
 #
-# Override the host-side port if 3127 is taken by something else:
+# Override the port if 3127 is taken:
 #   sudo PDF_COMP_PORT=3300 ./scripts/setup.sh
 #
 # What it does (idempotent — re-running updates the deployment):
-#   1. creates a 2 GB swap file if missing  (safety net for big-PDF spikes)
-#   2. installs Docker if missing
-#   3. writes .env with PDF_COMP_PORT
-#   4. docker compose up -d --build  (app on 127.0.0.1:$PDF_COMP_PORT)
-#
-# After this finishes, paste the printed nginx snippet into your existing
-# server { ... } block for ilyagrshn.com and reload nginx.
+#   1. Creates a 2 GB swap file if missing (spike headroom for big PDFs).
+#   2. Installs apt packages: nodejs 22 (NodeSource), python3-venv, qpdf,
+#      libjpeg-turbo-progs, pnpm.
+#   3. `pnpm install --frozen-lockfile && pnpm build` — builds Next.js
+#      standalone on the host itself.
+#   4. Stages standalone + static + public + scripts under
+#      /opt/pdf-comp/current/, creates .venv from scripts/requirements.txt.
+#   5. Installs the pdf-comp systemd unit + /etc/pdf-comp.env, starts it.
+#   6. Prints an nginx snippet.
 
 set -euo pipefail
 
@@ -24,6 +27,8 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 PORT="${PDF_COMP_PORT:-3127}"
+INSTALL_DIR="/opt/pdf-comp/current"
+SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 step() { printf "\n→ %s\n" "$1"; }
 
@@ -34,24 +39,82 @@ if ! swapon --show | grep -q swap; then
     mkswap /swapfile >/dev/null
     swapon /swapfile
     grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
-    echo "  done"
-else
-    echo "  already configured"
 fi
 
-step "Docker"
-if ! command -v docker >/dev/null 2>&1; then
-    curl -fsSL https://get.docker.com | sh >/dev/null
-    systemctl enable --now docker
-    echo "  installed"
-else
-    echo "  already installed"
+step "apt packages"
+export DEBIAN_FRONTEND=noninteractive
+# Always resolve Node from the apt package — the systemd unit hard-codes
+# `/usr/bin/node`, so we can't rely on a nvm/asdf install on PATH.
+if ! dpkg -l nodejs 2>/dev/null | grep -q '^ii  nodejs' \
+   || [ "$(/usr/bin/node -v 2>/dev/null | cut -c2- | cut -d. -f1)" -lt 22 ]; then
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
+    apt-get install -y --no-install-recommends nodejs >/dev/null
+fi
+apt-get update >/dev/null
+apt-get install -y --no-install-recommends \
+    python3 python3-venv qpdf libjpeg-turbo-progs rsync >/dev/null
+if ! command -v pnpm >/dev/null 2>&1; then
+    # corepack ships with the NodeSource nodejs; pin the pnpm major here.
+    corepack enable
+    corepack prepare pnpm@10 --activate
 fi
 
-step "Building and starting (first build takes ~5-10 minutes on a small VPS)"
-printf "PDF_COMP_PORT=%s\n" "$PORT" > .env
-chmod 600 .env
-docker compose up -d --build
+step "Service user + install dir"
+# Dedicated user name (not the generic `app`) so a co-hosted service
+# can't accidentally inherit our filesystem/process privileges by
+# reusing an existing account.
+if ! id pdf-comp >/dev/null 2>&1; then
+    useradd --system --home /opt/pdf-comp --shell /usr/sbin/nologin pdf-comp
+fi
+mkdir -p "$INSTALL_DIR/tmp"
+
+step "Build (this can take a few minutes on a small VPS)"
+cd "$SRC_DIR"
+pnpm install --frozen-lockfile
+pnpm build
+
+step "Stopping service before mutating install tree"
+# Prevents mid-request file swap on the update flow. First-time
+# installs have no unit yet — swallow the error.
+systemctl stop pdf-comp.service 2>/dev/null || true
+
+step "Staging to $INSTALL_DIR"
+# Keep .venv and tmp across re-runs (they live inside INSTALL_DIR).
+rsync -a --delete \
+    --exclude=tmp \
+    --exclude=.venv \
+    .next/standalone/. "$INSTALL_DIR/"
+mkdir -p "$INSTALL_DIR/.next"
+rsync -a --delete .next/static/. "$INSTALL_DIR/.next/static/"
+[ -d public ] && rsync -a --delete public/. "$INSTALL_DIR/public/"
+rsync -a --delete scripts/. "$INSTALL_DIR/scripts/"
+
+step "Python venv"
+cd "$INSTALL_DIR"
+if [ ! -x .venv/bin/python ]; then
+    python3 -m venv .venv
+fi
+.venv/bin/pip install --no-cache-dir --disable-pip-version-check --upgrade pip >/dev/null
+.venv/bin/pip install --no-cache-dir --disable-pip-version-check -r scripts/requirements.txt >/dev/null
+chown -R pdf-comp:pdf-comp /opt/pdf-comp
+
+step "systemd unit"
+install -m 0644 "$SRC_DIR/systemd/pdf-comp.service" /etc/systemd/system/pdf-comp.service
+cat >/etc/pdf-comp.env <<ENV_EOF
+NODE_ENV=production
+NEXT_TELEMETRY_DISABLED=1
+HOSTNAME=127.0.0.1
+PORT=$PORT
+PATH=/usr/local/bin:/usr/bin:/bin
+NODE_OPTIONS=--max-old-space-size=768
+MALLOC_ARENA_MAX=2
+PYTHONDONTWRITEBYTECODE=1
+PYTHONUNBUFFERED=1
+ENV_EOF
+chmod 600 /etc/pdf-comp.env
+systemctl daemon-reload
+systemctl enable pdf-comp.service >/dev/null
+systemctl start pdf-comp.service
 
 cat <<EOF
 
@@ -93,9 +156,10 @@ Without it, a single misbehaving client can saturate your VPS RAM.
 Reload:    nginx -t && systemctl reload nginx
 Open:      https://<your-domain>/pdf_comp/
 
-To update later:
-    git pull && sudo docker compose up -d --build
+To update later, re-run this script (git pull first).
 
 Logs:
-    docker compose logs -f
+    journalctl -u pdf-comp -f
+Status:
+    systemctl status pdf-comp
 EOF

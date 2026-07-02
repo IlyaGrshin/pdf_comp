@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
-# One-shot deployment to a Linux VPS that already has a reverse proxy.
+# One-shot deployment to a systemd Linux VPS. No Docker involved —
+# saves ~70 MB idle RAM (dockerd + containerd) compared to the old
+# containerized layout and shaves the container overhead off Node.
 #
 # Usage from your local machine:
 #   scripts/deploy.sh root@vps.example.com
 #
-# What it does (idempotent):
-#   1. rsyncs the project to /opt/pdf-comp on the host
-#   2. installs Docker if missing
-#   3. creates a 2 GB swap file if missing
-#   4. starts the app container — bound to 127.0.0.1:3127
+# What it does (idempotent — safe to re-run as the update flow):
+#   1. Builds Next.js standalone locally (needs Node 22 + pnpm here).
+#   2. Installs apt packages on the host: nodejs 22, qpdf,
+#      libjpeg-turbo-progs, python3-venv.
+#   3. Creates the `pdf-comp` service user + /opt/pdf-comp/current.
+#   4. rsyncs .next/standalone + .next/static + public + scripts to
+#      the host, then builds a Python venv there.
+#   5. Installs /etc/systemd/system/pdf-comp.service and /etc/pdf-comp.env,
+#      enables + restarts the service (listens on 127.0.0.1:$PORT).
+#   6. Creates a 2 GB swap file if the host has none.
 #
-# After it finishes, you add ONE block to your existing reverse proxy
-# config to forward /pdf_comp/* to localhost:3127. Snippets are printed
-# at the end. The script does NOT touch your existing proxy or HTTPS.
+# After it finishes, add ONE block to your existing nginx (snippets
+# printed at the end). The script does not touch your reverse proxy
+# or HTTPS.
 
 set -euo pipefail
 
@@ -23,54 +30,132 @@ if [ $# -ne 1 ]; then
 fi
 
 REMOTE="$1"
-PROJECT_DIR="/opt/pdf-comp"
+INSTALL_DIR="/opt/pdf-comp/current"
 PORT="${PDF_COMP_PORT:-3127}"
 
 step() { printf "\n→ %s\n" "$1"; }
 
-step "Syncing project to $REMOTE:$PROJECT_DIR"
-ssh "$REMOTE" "mkdir -p $PROJECT_DIR"
-rsync -az --delete \
-    --exclude=node_modules \
-    --exclude=.next \
-    --exclude=.venv \
-    --exclude=tmp \
-    --exclude=test-pdfs \
-    --exclude=.git \
-    --exclude=.DS_Store \
-    ./ "$REMOTE:$PROJECT_DIR/"
+step "Building Next.js standalone locally"
+pnpm install --frozen-lockfile
+pnpm build
 
-step "Provisioning host (idempotent)"
-ssh "$REMOTE" PROJECT_DIR="$PROJECT_DIR" PDF_COMP_PORT="$PORT" bash <<'REMOTE_BOOTSTRAP'
+step "Preparing staging tree"
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+# The standalone bundle is a self-contained mini node_modules + server.js.
+cp -R .next/standalone/. "$STAGE/"
+# `.next/static` and `public` are NOT in standalone — ship alongside.
+mkdir -p "$STAGE/.next"
+cp -R .next/static "$STAGE/.next/static"
+[ -d public ] && cp -R public "$STAGE/public"
+cp -R scripts "$STAGE/scripts"
+mkdir -p "$STAGE/tmp"
+
+step "Provisioning host packages + user (idempotent)"
+ssh "$REMOTE" bash <<'REMOTE_PROVISION'
 set -euo pipefail
-cd "$PROJECT_DIR"
+export DEBIAN_FRONTEND=noninteractive
 
+# Node 22 from NodeSource — Debian bookworm ships 18, which is too old
+# for Next.js 16. Always install: the systemd unit hard-codes
+# `/usr/bin/node`, and skipping install just because an nvm/asdf node
+# is on PATH would leave the service pointing at a missing binary.
+if ! dpkg -l nodejs 2>/dev/null | grep -q '^ii  nodejs' \
+   || [ "$(/usr/bin/node -v 2>/dev/null | cut -c2- | cut -d. -f1)" -lt 22 ]; then
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
+    apt-get install -y --no-install-recommends nodejs >/dev/null
+fi
+
+apt-get update >/dev/null
+apt-get install -y --no-install-recommends \
+    python3 python3-venv qpdf libjpeg-turbo-progs rsync >/dev/null
+
+# Service user. --system: no login, no home, no aging. Home points at
+# the install dir so relative paths still work if anyone su's in.
+# Named `pdf-comp` (not the generic `app`) to avoid inheriting an
+# existing account belonging to another service on the host.
+if ! id pdf-comp >/dev/null 2>&1; then
+    useradd --system --home /opt/pdf-comp --shell /usr/sbin/nologin pdf-comp
+fi
+
+mkdir -p /opt/pdf-comp/current/tmp
+chown -R pdf-comp:pdf-comp /opt/pdf-comp
+REMOTE_PROVISION
+
+step "Stopping service before mutating install tree"
+# Without this, rsync --delete replaces files that node/python may be
+# reading, and clients hitting the service during the swap can see 500s
+# or half-updated scripts. Downtime here is a few seconds on a small
+# host. Ignore failure — first-time installs have no unit yet.
+ssh "$REMOTE" "systemctl stop pdf-comp.service 2>/dev/null || true"
+
+step "Rsyncing build to $REMOTE:$INSTALL_DIR"
+# --delete on the top level would wipe the on-host .venv every deploy;
+# exclude .venv and tmp explicitly so the venv survives updates.
+rsync -az --delete \
+    --exclude=tmp \
+    --exclude=.venv \
+    "$STAGE/" "$REMOTE:$INSTALL_DIR/"
+ssh "$REMOTE" "chown -R pdf-comp:pdf-comp $INSTALL_DIR"
+
+step "Refreshing Python venv on host"
+ssh "$REMOTE" bash <<REMOTE_VENV
+set -euo pipefail
+cd "$INSTALL_DIR"
+if [ ! -x .venv/bin/python ]; then
+    python3 -m venv .venv
+fi
+.venv/bin/pip install --no-cache-dir --disable-pip-version-check --upgrade pip >/dev/null
+.venv/bin/pip install --no-cache-dir --disable-pip-version-check -r scripts/requirements.txt >/dev/null
+chown -R pdf-comp:pdf-comp .venv
+REMOTE_VENV
+
+step "Installing systemd unit"
+scp -q systemd/pdf-comp.service "$REMOTE:/etc/systemd/system/pdf-comp.service"
+
+# Outer heredoc is unquoted so $PORT expands locally; the inner one
+# stays unquoted for the same reason. Nothing else in the block uses
+# $VAR syntax that could be misread by the remote shell.
+ssh "$REMOTE" bash <<REMOTE_SYSTEMD
+set -euo pipefail
+cat >/etc/pdf-comp.env <<ENV_EOF
+NODE_ENV=production
+NEXT_TELEMETRY_DISABLED=1
+HOSTNAME=127.0.0.1
+PORT=$PORT
+PATH=/usr/local/bin:/usr/bin:/bin
+# See AGENTS.md → "Self-healing memory pressure" for the reasoning
+# behind each of these — they are what makes 45 MB idle possible.
+NODE_OPTIONS=--max-old-space-size=768
+MALLOC_ARENA_MAX=2
+PYTHONDONTWRITEBYTECODE=1
+PYTHONUNBUFFERED=1
+ENV_EOF
+chmod 600 /etc/pdf-comp.env
+
+systemctl daemon-reload
+systemctl enable pdf-comp.service >/dev/null
+systemctl start pdf-comp.service
+sleep 1
+systemctl --no-pager --lines=0 status pdf-comp.service | head -8
+REMOTE_SYSTEMD
+
+step "Ensuring 2 GB swap (idempotent)"
+ssh "$REMOTE" bash <<'REMOTE_SWAP'
+set -euo pipefail
 if ! swapon --show | grep -q swap; then
-    echo "  creating 2 GB swap file"
     fallocate -l 2G /swapfile
     chmod 600 /swapfile
     mkswap /swapfile >/dev/null
     swapon /swapfile
     grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
+REMOTE_SWAP
 
-if ! command -v docker >/dev/null 2>&1; then
-    echo "  installing Docker"
-    curl -fsSL https://get.docker.com | sh >/dev/null
-    systemctl enable --now docker
-fi
-
-printf "PDF_COMP_PORT=%s\n" "$PDF_COMP_PORT" > .env
-chmod 600 .env
-
-echo "  building and starting (this can take a few minutes on the first run)"
-docker compose up -d --build
-REMOTE_BOOTSTRAP
-
-step "Done — app is running on 127.0.0.1:$PORT (the host)"
+step "Done — app is listening on 127.0.0.1:$PORT"
 cat <<EOF
 
-Add this block to your existing nginx server { … } for ilyagrshn.com,
+Add this block to your existing nginx server { … } for the host,
 then reload nginx:
 
 ──── nginx (inside the matching server { … } block) ────
@@ -91,23 +176,15 @@ location /pdf_comp/ {
     proxy_send_timeout 600s;
 }
 
-If you also use Caddy (e.g. for some other host), the equivalent is:
+Caddy equivalent:
     handle /pdf_comp* {
         reverse_proxy 127.0.0.1:$PORT
         request_body { max_size 1100MB }
     }
 
-Notes:
-  • Compression: brotli/gzip at the server level applies automatically to
-    HTML/JS/CSS/JSON. PDF downloads (Content-Type: application/pdf) stream
-    through uncompressed — JPEG inside is already compressed, recompressing
-    wastes CPU.
-  • The "/pdf_comp/" prefix is preserved end-to-end (Next.js basePath).
-    Don't add a trailing slash to proxy_pass — that would strip the prefix
-    and break Next's routing.
-
 Reload:    nginx -t && systemctl reload nginx
 Open:      https://ilyagrshn.com/pdf_comp/
-Logs:      ssh $REMOTE 'cd $PROJECT_DIR && docker compose logs -f'
+Logs:      ssh $REMOTE 'journalctl -u pdf-comp -f'
+Status:    ssh $REMOTE 'systemctl status pdf-comp'
 Update:    re-run this script
 EOF
