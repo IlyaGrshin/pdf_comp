@@ -34,6 +34,25 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 
+# ---- Memory caps ----
+# Cap V8's old-space so a runaway Node request can't crowd out the
+# Python subprocess. Python peaks ~800 MB per job (Pillow decode +
+# LANCZOS resize on 4650x6370 images); the cgroup limit is 1700 MB.
+# 768 MB heap + Node C++/JIT overhead ≈ 900 MB RSS, leaving ~800 MB
+# for one Python job with headroom for kernel and Caddy.
+ENV NODE_OPTIONS="--max-old-space-size=768"
+# glibc malloc gives every thread its own 64 MB arena; libuv's worker
+# pool (4 threads) plus Python's ThreadPoolExecutor (up to 8) make
+# that add up to hundreds of MB of committed-but-unused RSS. 2 is the
+# de-facto floor used by Debian/Fedora runtimes for the same reason.
+# Propagates to the Python subprocess via env inheritance.
+ENV MALLOC_ARENA_MAX=2
+# .pyc files were already generated when the venv was built; skip
+# rewriting them at runtime and skip stdio buffering (Python-side
+# logs would otherwise stay in-process until flush).
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+
 # System packages:
 #  qpdf               — used by lib/validate-pdf.ts (--requires-password probe)
 #  python3 + venv     — for scripts/recompress.py (pikepdf+Pillow pipeline)
