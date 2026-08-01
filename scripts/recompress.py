@@ -71,17 +71,21 @@ def encode_jpeg(pil, quality):
         # thousands of write+poll syscalls per image, and the profile showed
         # that plumbing costing more than pikepdf's whole save step. Output
         # stays on the pipe: the encoded JPEG is small enough not to matter.
-        with tempfile.NamedTemporaryFile(suffix=".pnm", delete=False) as tf:
+        # TemporaryFile, not NamedTemporaryFile: on POSIX it is unlinked the
+        # instant it is created (or opened with O_TMPFILE), so the decoded
+        # bitmap has no directory entry for anything to find. That matters
+        # because this is user content — a named temp under /tmp would sit
+        # outside the job dir, i.e. outside both deleteJob() and the sweeper,
+        # and a SIGKILL from the compress.ts timeout or the cgroup OOM killer
+        # skips any cleanup we could write. Here the kernel reclaims the
+        # blocks when the fd dies with the process, kill signal or not.
+        with tempfile.TemporaryFile() as tf:
             tf.write(pnm)
-            src = tf.name
-        try:
-            with open(src, "rb") as fh:
-                return subprocess.run(
-                    [CJPEG, "-quality", str(quality), "-optimize", "-progressive"],
-                    stdin=fh, capture_output=True, check=True,
-                ).stdout
-        finally:
-            os.unlink(src)
+            tf.seek(0)
+            return subprocess.run(
+                [CJPEG, "-quality", str(quality), "-optimize", "-progressive"],
+                stdin=tf, capture_output=True, check=True,
+            ).stdout
     if pil.mode not in ("RGB", "L"):
         pil = pil.convert("RGB")
     buf = io.BytesIO()
