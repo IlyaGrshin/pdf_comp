@@ -49,6 +49,19 @@ streamed download  →  job dir deleted on close
 - **pikepdf is NOT thread-safe for writes.** Only the pure-CPU phase
   (decode → resize → encode) runs in workers. Object writes stay on main.
 - **Don't add `/sRGB` even "for testing".** It's a known footgun.
+- **The upload is a raw body, never `multipart/form-data`.** `req.formData()`
+  materialises the whole part in memory before returning a `File`: measured
+  at 4.3x-4.9x the upload size in RSS (a 173 MB PDF grew the server by
+  740 MB), which alone exceeds `MemoryMax` on a 2 GB host before compression
+  even starts. The client sends the file as the request body and the route
+  pipes `req.body` to disk — the same 173 MB upload now costs 26 MB. If you
+  ever need a second form field, add a header, not a multipart part.
+- **The sweeper must skip in-flight jobs.** A directory's mtime is stamped
+  when an entry is *created* inside it, so a job dir is dated from the moment
+  `input.pdf` is opened — the start of the upload, not the end. A slow upload
+  plus a long compression crosses `JOB_TTL_MS` while Python is still writing.
+  `holdJob()` pins the dir for the request's lifetime; the 10-minute promise
+  still applies from the moment the job finishes.
 - **`BASE_PATH` lives in three places — keep in sync.** `lib/config.ts`,
   `basePath` in `next.config.ts`, and the `location` matcher in the host's
   reverse-proxy config. Set to `""` to mount at the apex.
@@ -97,7 +110,7 @@ memory detection misreports).
 
 | File | Why it matters |
 |------|----------------|
-| `lib/compress.ts` | spawns Python, no-benefit guard, kicks off `fs.stat(input)` in parallel with the subprocess |
+| `lib/compress.ts` | spawns Python, no-benefit guard, 10-min subprocess timeout |
 | `scripts/recompress.py` | the actual compression — pikepdf + mozjpeg + parallel encode + dedup. Falls back to Pillow's libjpeg if mozjpeg's `cjpeg` isn't on PATH |
 | `lib/runtime-limits.ts` | host-aware autotune of concurrency and file size cap; per-request memory pressure probe |
 | `lib/config.ts` | `BASE_PATH` — keep in sync with `next.config.ts` and the host's reverse proxy |
@@ -105,7 +118,7 @@ memory detection misreports).
 | `lib/errors.ts` | shared error-code union (server emits + client maps to copy) |
 | `app/page.tsx` | server shell — reads LIMITS, hands `maxBytes` to the client to avoid first-paint flash |
 | `app/home.tsx` | client state machine: idle → uploading → processing → done/error |
-| `app/api/compress/route.ts` | streaming upload via `pipeline(file.stream(), createWriteStream)` — never buffers full file in memory |
+| `app/api/compress/route.ts` | streams `req.body` straight to disk — see the raw-body invariant below |
 
 ## Local dev
 

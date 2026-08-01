@@ -32,12 +32,14 @@ export function Home({ maxBytes }: Props) {
   }, []);
 
   const startUpload = useCallback((picked: File) => {
-    const fd = new FormData();
-    fd.append("file", picked);
-
+    // Raw body, not multipart: the server pipes the request straight to disk,
+    // and undici's FormData parser would materialise the whole PDF in memory
+    // first (measured ~4.3x the file size in RSS). The server never needs the
+    // original filename — the download name is derived here, in result-card.
     const xhr = new XMLHttpRequest();
     xhrRef.current = xhr;
     xhr.open("POST", `${BASE_PATH}/api/compress`);
+    xhr.setRequestHeader("content-type", "application/pdf");
     xhr.responseType = "json";
 
     setState({ kind: "uploading", progress: 0 });
@@ -63,7 +65,7 @@ export function Home({ maxBytes }: Props) {
         setState({ kind: "error", code: known });
       }
     };
-    xhr.send(fd);
+    xhr.send(picked);
   }, []);
 
   const handleFileChange = (next: File | null) => {
