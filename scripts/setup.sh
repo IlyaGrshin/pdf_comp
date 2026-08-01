@@ -53,8 +53,22 @@ step "apt packages"
 export DEBIAN_FRONTEND=noninteractive
 # Always resolve Node from the apt package — the systemd unit hard-codes
 # `/usr/bin/node`, so we can't rely on a nvm/asdf install on PATH.
+HOST_NODE=$(/usr/bin/node -v 2>/dev/null | cut -c2- | cut -d. -f1)
+case "$HOST_NODE" in
+    ''|*[!0-9]*) HOST_NODE=0 ;;
+esac
+if [ "$HOST_NODE" -gt "$NODE_MAJOR" ]; then
+    # Same reasoning as scripts/deploy.sh: building against a newer major than
+    # the repo declares makes .nvmrc decorative, and apt-downgrading a
+    # system-wide package on a host that also serves other things is not this
+    # script's decision.
+    echo "Host runs Node $HOST_NODE but .nvmrc declares $NODE_MAJOR." >&2
+    echo "This script will not downgrade the host's system Node." >&2
+    echo "Either bump .nvmrc to $HOST_NODE, or downgrade the host deliberately." >&2
+    exit 1
+fi
 if ! dpkg -l nodejs 2>/dev/null | grep -q '^ii  nodejs' \
-   || [ "$(/usr/bin/node -v 2>/dev/null | cut -c2- | cut -d. -f1)" -lt "$NODE_MAJOR" ]; then
+   || [ "$HOST_NODE" -lt "$NODE_MAJOR" ]; then
     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - >/dev/null
     apt-get install -y --no-install-recommends nodejs >/dev/null
 fi

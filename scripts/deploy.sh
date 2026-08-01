@@ -59,6 +59,23 @@ case "$HOST_NODE" in
 esac
 if [ "$HOST_NODE" -lt "$NODE_MAJOR" ]; then
     HOST_NODE="$NODE_MAJOR"
+elif [ "$HOST_NODE" -gt "$NODE_MAJOR" ]; then
+    # Deliberately not resolved by either silent option. Following the host
+    # would make .nvmrc decorative — the declared major would be built with
+    # nowhere and deployed nowhere. Forcing the host down to it would mean
+    # apt-downgrading a system-wide package on a box that also runs the
+    # reverse proxy and whatever else lives there, which is not this script's
+    # call to make. So: stop, and let a human pick.
+    if [ "${PDF_COMP_ALLOW_NODE_MISMATCH:-}" = "1" ]; then
+        echo "warning: host runs Node $HOST_NODE, .nvmrc declares $NODE_MAJOR (override set)" >&2
+    else
+        echo "Host runs Node $HOST_NODE but .nvmrc declares $NODE_MAJOR." >&2
+        echo "Provisioning never downgrades the host's system Node, so this deploy" >&2
+        echo "would build and run on $HOST_NODE while the repo claims $NODE_MAJOR." >&2
+        echo "Bump .nvmrc to $HOST_NODE, downgrade the host deliberately, or set" >&2
+        echo "PDF_COMP_ALLOW_NODE_MISMATCH=1 to deploy on $HOST_NODE anyway." >&2
+        exit 1
+    fi
 fi
 LOCAL_NODE=$(node -v 2>/dev/null | cut -c2- | cut -d. -f1 || true)
 if [ -z "$LOCAL_NODE" ]; then
