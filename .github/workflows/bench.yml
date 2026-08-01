@@ -58,14 +58,6 @@ jobs:
             echo "::notice::Base lacks bench/; running in bootstrap mode (no baseline comparison)."
           fi
 
-      - name: Mirror fixtures + bench harness onto base checkout
-        run: |
-          # Use the PR's fixtures and harness on the base too — otherwise the
-          # comparison would mix harness changes with compression changes, and
-          # if base predates bench/ the run would have nothing to do.
-          mkdir -p base/bench
-          cp -r pr/bench/. base/bench/
-
       - name: Install PR deps
         run: |
           python -m venv pr/.venv
@@ -84,6 +76,19 @@ jobs:
 
       - name: Generate fixtures (PR)
         run: pr/.venv/bin/python pr/bench/fixtures/generate.py pr/bench/fixtures/out
+
+      - name: Mirror fixtures + bench harness onto base checkout
+        # Must run *after* generation: the fixtures live under bench/fixtures/out
+        # and this copy is what puts them on the base side. Mirroring earlier
+        # copied the harness but no fixtures, so `Bench base` exited 2 with
+        # "No fixtures in .../base/bench/fixtures/out" and the gate never
+        # produced a comparison.
+        # Both sides must share one set of fixtures and one harness, otherwise
+        # the diff would mix harness changes with compression changes; and if
+        # base predates bench/, it would have nothing to run at all.
+        run: |
+          mkdir -p base/bench
+          cp -r pr/bench/. base/bench/
 
       - name: Bench PR
         working-directory: pr
