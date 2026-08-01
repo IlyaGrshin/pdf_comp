@@ -28,6 +28,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -63,10 +64,28 @@ def encode_jpeg(pil, quality):
                 pil = pil.convert("RGB")
         w, h = pil.size
         pnm = b"%s\n%d %d\n255\n" % (marker, w, h) + pil.tobytes()
-        return subprocess.run(
-            [CJPEG, "-quality", str(quality), "-optimize", "-progressive"],
-            input=pnm, capture_output=True, check=True,
-        ).stdout
+        # Hand cjpeg a file rather than piping the PNM to its stdin.
+        # subprocess.run(input=...) goes through communicate(), which feeds the
+        # pipe in select.PIPE_BUF-sized slices under a selector loop — 512 B on
+        # macOS, 4096 B on Linux. A 2400x1800 RGB frame is ~12 MB, i.e. tens of
+        # thousands of write+poll syscalls per image, and the profile showed
+        # that plumbing costing more than pikepdf's whole save step. Output
+        # stays on the pipe: the encoded JPEG is small enough not to matter.
+        # TemporaryFile, not NamedTemporaryFile: on POSIX it is unlinked the
+        # instant it is created (or opened with O_TMPFILE), so the decoded
+        # bitmap has no directory entry for anything to find. That matters
+        # because this is user content — a named temp under /tmp would sit
+        # outside the job dir, i.e. outside both deleteJob() and the sweeper,
+        # and a SIGKILL from the compress.ts timeout or the cgroup OOM killer
+        # skips any cleanup we could write. Here the kernel reclaims the
+        # blocks when the fd dies with the process, kill signal or not.
+        with tempfile.TemporaryFile() as tf:
+            tf.write(pnm)
+            tf.seek(0)
+            return subprocess.run(
+                [CJPEG, "-quality", str(quality), "-optimize", "-progressive"],
+                stdin=tf, capture_output=True, check=True,
+            ).stdout
     if pil.mode not in ("RGB", "L"):
         pil = pil.convert("RGB")
     buf = io.BytesIO()
