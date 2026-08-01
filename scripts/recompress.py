@@ -28,6 +28,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -63,10 +64,24 @@ def encode_jpeg(pil, quality):
                 pil = pil.convert("RGB")
         w, h = pil.size
         pnm = b"%s\n%d %d\n255\n" % (marker, w, h) + pil.tobytes()
-        return subprocess.run(
-            [CJPEG, "-quality", str(quality), "-optimize", "-progressive"],
-            input=pnm, capture_output=True, check=True,
-        ).stdout
+        # Hand cjpeg a file rather than piping the PNM to its stdin.
+        # subprocess.run(input=...) goes through communicate(), which feeds the
+        # pipe in select.PIPE_BUF-sized slices under a selector loop — 512 B on
+        # macOS, 4096 B on Linux. A 2400x1800 RGB frame is ~12 MB, i.e. tens of
+        # thousands of write+poll syscalls per image, and the profile showed
+        # that plumbing costing more than pikepdf's whole save step. Output
+        # stays on the pipe: the encoded JPEG is small enough not to matter.
+        with tempfile.NamedTemporaryFile(suffix=".pnm", delete=False) as tf:
+            tf.write(pnm)
+            src = tf.name
+        try:
+            with open(src, "rb") as fh:
+                return subprocess.run(
+                    [CJPEG, "-quality", str(quality), "-optimize", "-progressive"],
+                    stdin=fh, capture_output=True, check=True,
+                ).stdout
+        finally:
+            os.unlink(src)
     if pil.mode not in ("RGB", "L"):
         pil = pil.convert("RGB")
     buf = io.BytesIO()
