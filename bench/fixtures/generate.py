@@ -151,9 +151,10 @@ def make_jpx(out_path: Path, n: int = 6) -> None:
     exercised it, so the gate was blind to both regressions and wins on that
     path.
 
-    A mask-less variant was tried first and did not reproduce anything —
-    as_pil_image() stayed lazy and cost 0.03s for six images. The /SMask is
-    the load-bearing part, not the filter alone.
+    The /SMask is the load-bearing part, not the filter: strip it and
+    as_pil_image() goes back to returning a lazy handle for JPX as well,
+    0.03s for six images against 4.57s with the mask attached. A fixture
+    without one measures nothing.
 
     Built through pikepdf rather than reportlab: reportlab re-encodes whatever
     it is handed, and the point is to get a genuine JPX codestream into the

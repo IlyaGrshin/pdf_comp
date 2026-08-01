@@ -169,11 +169,10 @@ def recompress_pdf(input_path, output_path,
     inflight: "deque[tuple[Stream, bytes, Future, int]]" = deque()
     inflight_bytes = 0
     # Two per worker keeps the pool fed while the main thread decodes the next
-    # image. But a count alone is not a memory bound: figma-1.pdf contains
-    # 3884x2590 RGBA images at ~40 MB each, and sixteen of those in flight is
-    # 640 MB — which is exactly what the first version of this did, peaking at
-    # 810 MB. The byte budget is what actually holds the ceiling; the count is
-    # only there to stop thousands of thumbnails from queueing up.
+    # image. A count alone is not a memory bound, though: figma-1.pdf contains
+    # 3884x2590 RGBA images at ~40 MB each, so sixteen of those in flight is
+    # 640 MB. The byte budget is what holds the ceiling; the count is only
+    # there to stop thousands of thumbnails from queueing up.
     window = max(2, workers * 2)
     inflight_budget = 256 * 1024 * 1024
     seen_raw: dict[str, Stream] = {}
