@@ -17,6 +17,7 @@ Archetypes:
 
 import argparse
 import io
+import zlib
 from pathlib import Path
 
 import numpy as np
@@ -134,6 +135,93 @@ def make_dedup_heavy(out_path: Path, n: int = 16) -> None:
     pdf.save(str(out_path))
 
 
+def make_jpx(out_path: Path, n: int = 6) -> None:
+    """JPEG 2000 plus a soft mask — what real Figma exports are actually made of.
+
+    Every other fixture here is DCTDecode or FlateDecode without an /SMask,
+    and for those pikepdf hands back a lazy PIL handle: the pixels get decoded
+    later, inside the worker pool, so the cost is already parallel. This shape
+    behaves differently. pikepdf has to merge the mask into an alpha channel
+    to produce one RGBA image, which forces both the JPX codestream and the
+    Flate mask to be decoded eagerly — on the main thread, in phase 1a.
+
+    That is the dominant cost of the workload this service exists for: on
+    figma-1.pdf it is 148 such images and ~7.4s of a ~10s run, while its 150
+    plain FlateDecode images cost 0.16s between them. Nothing in bench/
+    exercised it, so the gate was blind to both regressions and wins on that
+    path.
+
+    A mask-less variant was tried first and did not reproduce anything —
+    as_pil_image() stayed lazy and cost 0.03s for six images. The /SMask is
+    the load-bearing part, not the filter alone.
+
+    Built through pikepdf rather than reportlab: reportlab re-encodes whatever
+    it is handed, and the point is to get a genuine JPX codestream into the
+    file untouched.
+    """
+    pdf = pikepdf.Pdf.new()
+    w_pt, h_pt = A4
+    content = f"q\n{w_pt} 0 0 {h_pt} 0 0 cm\n/Img Do\nQ\n".encode()
+    w, h = 2400, 1800
+
+    yy, xx = np.mgrid[0:h, 0:w].astype(np.float32)
+
+    for i in range(n):
+        img = photo_like(w, h, seed=400 + i)
+        # Radial falloff, same idea as make_softmask, but the centre moves per
+        # page. Identical masks would collapse into one under cross-page dedup
+        # and this fixture would stop measuring what it is here to measure.
+        cx = w * (0.3 + 0.4 * i / max(1, n - 1))
+        cy = h * (0.7 - 0.4 * i / max(1, n - 1))
+        d = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+        alpha = np.clip(255.0 - (d / d.max()) * 255.0 * 1.4, 0, 255).astype(np.uint8)
+
+        buf = io.BytesIO()
+        # codec="jp2" writes the JP2 container. A bare "j2k" codestream is also
+        # legal under /JPXDecode, but the bench needs pdftoppm to rasterise the
+        # page for SSIM and poppler is happier with the box format.
+        #
+        # 5:1 rather than something aggressive: at 20:1 the JPX source came out
+        # smaller than the JPEG the recompressor produces, so every image hit
+        # the "re-encode didn't help" branch and landed as untouched. The
+        # fixture still exercised the decode, but `ratio` could never move and
+        # a compression regression would have been invisible in it.
+        img.convert("RGB").save(
+            buf, "JPEG2000", codec="jp2", quality_mode="rates", quality_layers=[5]
+        )
+
+        img_obj = pdf.make_stream(buf.getvalue())
+        img_obj["/Type"] = pikepdf.Name.XObject
+        img_obj["/Subtype"] = pikepdf.Name.Image
+        img_obj["/Width"] = w
+        img_obj["/Height"] = h
+        img_obj["/ColorSpace"] = pikepdf.Name.DeviceRGB
+        img_obj["/BitsPerComponent"] = 8
+        img_obj["/Filter"] = pikepdf.Name.JPXDecode
+
+        # Mask at the same dimensions as the colour image. AGENTS.md is
+        # explicit that a lower-resolution alpha quantises on a different grid
+        # and tears at zoom; matching here keeps the fixture honest about what
+        # production data looks like.
+        smask = pdf.make_stream(zlib.compress(alpha.tobytes()))
+        smask["/Type"] = pikepdf.Name.XObject
+        smask["/Subtype"] = pikepdf.Name.Image
+        smask["/Width"] = w
+        smask["/Height"] = h
+        smask["/ColorSpace"] = pikepdf.Name.DeviceGray
+        smask["/BitsPerComponent"] = 8
+        smask["/Filter"] = pikepdf.Name.FlateDecode
+        img_obj["/SMask"] = smask
+
+        page = pdf.add_blank_page(page_size=A4)
+        page.Resources = pikepdf.Dictionary(
+            XObject=pikepdf.Dictionary(Img=img_obj),
+        )
+        page.Contents = pdf.make_stream(content)
+
+    pdf.save(str(out_path))
+
+
 def make_softmask(out_path: Path, n: int = 4) -> None:
     c = canvas.Canvas(str(out_path), pagesize=A4)
     w, h = A4
@@ -187,6 +275,7 @@ FIXTURES = {
     "single_image": make_single_image,
     "multi_image": make_multi_image,
     "dedup_heavy": make_dedup_heavy,
+    "jpx": make_jpx,
     "softmask": make_softmask,
     "tiny_images": make_tiny_images,
     "mixed": make_mixed,
