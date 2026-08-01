@@ -44,9 +44,17 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 RECOMPRESS = REPO_ROOT / "scripts" / "recompress.py"
 
 VENV_PY = REPO_ROOT / ".venv" / "bin" / "python"
-PYTHON = str(VENV_PY) if VENV_PY.exists() else sys.executable
+# BENCH_PYTHON points the measured subprocess at a different interpreter than
+# the repo's own .venv. Needed to A/B a pikepdf or Pillow bump without
+# rebuilding .venv between the two runs — and it keeps the harness's own
+# Pillow (used for SSIM) from being the same install as the one under test.
+# Unset in CI, which measures .venv.
+PYTHON = os.environ.get("BENCH_PYTHON") or (str(VENV_PY) if VENV_PY.exists() else sys.executable)
 
-TIME_BIN = "/usr/bin/time"
+# CI (`apt install time`) puts GNU time at /usr/bin/time; Homebrew installs it
+# as `gtime` because macOS already ships BSD time there, which has no -v and
+# cannot report peak RSS.
+TIME_BIN = shutil.which("gtime") or "/usr/bin/time"
 
 TIME_PATTERNS = {
     "wall_s": re.compile(r"Elapsed \(wall clock\) time .*?: (.+)$", re.MULTILINE),
@@ -67,7 +75,10 @@ def parse_wall_clock(s: str) -> float:
 
 def run_once(input_pdf: Path, output_pdf: Path) -> dict:
     if not Path(TIME_BIN).exists():
-        raise RuntimeError(f"{TIME_BIN} not found — install GNU time (apt install time)")
+        raise RuntimeError(
+            f"{TIME_BIN} not found — install GNU time "
+            "(apt install time / brew install gnu-time)"
+        )
     with tempfile.NamedTemporaryFile("w+", suffix=".time", delete=False) as tf:
         tf_path = Path(tf.name)
     try:

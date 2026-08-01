@@ -49,6 +49,19 @@ streamed download  →  job dir deleted on close
 - **pikepdf is NOT thread-safe for writes.** Only the pure-CPU phase
   (decode → resize → encode) runs in workers. Object writes stay on main.
 - **Don't add `/sRGB` even "for testing".** It's a known footgun.
+- **The upload is a raw body, never `multipart/form-data`.** `req.formData()`
+  materialises the whole part in memory before returning a `File`: measured
+  at 4.3x-4.9x the upload size in RSS (a 173 MB PDF grew the server by
+  740 MB), which alone exceeds `MemoryMax` on a 2 GB host before compression
+  even starts. The client sends the file as the request body and the route
+  pipes `req.body` to disk — the same 173 MB upload now costs 26 MB. If you
+  ever need a second form field, add a header, not a multipart part.
+- **The sweeper must skip in-flight jobs.** A directory's mtime is stamped
+  when an entry is *created* inside it, so a job dir is dated from the moment
+  `input.pdf` is opened — the start of the upload, not the end. A slow upload
+  plus a long compression crosses `JOB_TTL_MS` while Python is still writing.
+  `holdJob()` pins the dir for the request's lifetime; the 10-minute promise
+  still applies from the moment the job finishes.
 - **`BASE_PATH` lives in three places — keep in sync.** `lib/config.ts`,
   `basePath` in `next.config.ts`, and the `location` matcher in the host's
   reverse-proxy config. Set to `""` to mount at the apex.
@@ -64,6 +77,15 @@ streamed download  →  job dir deleted on close
 - **Comments explain WHY, not WHAT.** Especially flags/thresholds with
   empirical justification (a past failure mode, a measurement). Anything that
   reads like a session diary or a pull-request description should be deleted.
+- **oxlint, not ESLint.** `eslint-config-next` drags in typescript-eslint,
+  which refuses to run under TypeScript 7 (upstream closed that request as
+  not planned); oxlint has no dependency on the TS compiler API, which is
+  what makes TS 7 usable here at all. Rule parity with the old config was
+  verified against planted violations, React Compiler rules included — those
+  live in oxlint's `nursery` category and are switched on explicitly as
+  `react/react-compiler` in `.oxlintrc.json`. That rule is experimental
+  upstream and its diagnostics may shift; if it ever regresses, oxlint can
+  load `eslint-plugin-react-hooks` directly through its `jsPlugins` option.
 
 ## Auto-tuning
 
@@ -88,7 +110,7 @@ memory detection misreports).
 
 | File | Why it matters |
 |------|----------------|
-| `lib/compress.ts` | spawns Python, no-benefit guard, kicks off `fs.stat(input)` in parallel with the subprocess |
+| `lib/compress.ts` | spawns Python, no-benefit guard, 10-min subprocess timeout |
 | `scripts/recompress.py` | the actual compression — pikepdf + mozjpeg + parallel encode + dedup. Falls back to Pillow's libjpeg if mozjpeg's `cjpeg` isn't on PATH |
 | `lib/runtime-limits.ts` | host-aware autotune of concurrency and file size cap; per-request memory pressure probe |
 | `lib/config.ts` | `BASE_PATH` — keep in sync with `next.config.ts` and the host's reverse proxy |
@@ -96,16 +118,23 @@ memory detection misreports).
 | `lib/errors.ts` | shared error-code union (server emits + client maps to copy) |
 | `app/page.tsx` | server shell — reads LIMITS, hands `maxBytes` to the client to avoid first-paint flash |
 | `app/home.tsx` | client state machine: idle → uploading → processing → done/error |
-| `app/api/compress/route.ts` | streaming upload via `pipeline(file.stream(), createWriteStream)` — never buffers full file in memory |
+| `app/api/compress/route.ts` | streams `req.body` straight to disk — see the raw-body invariant below |
 
 ## Local dev
 
 ```bash
-brew install qpdf mozjpeg pnpm
+brew install qpdf mozjpeg node@24 gnu-time   # gnu-time only for bench/
+corepack enable                              # pnpm version comes from package.json
 python3 -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
 pnpm install
 pnpm dev    # → http://localhost:3000/pdf_comp/
 ```
+
+**Toolchain versions live in exactly one place each** — `.nvmrc` for the Node
+major, `packageManager` in `package.json` for pnpm. `scripts/deploy.sh` and
+`scripts/setup.sh` read `.nvmrc` rather than hardcoding a major, and corepack
+reads `packageManager`. Bumping either means editing one file; nothing else
+needs to be kept in sync.
 
 Direct script use (handy when tuning compression parameters without the web
 layer):
@@ -125,18 +154,21 @@ over the previous containerized layout because `dockerd + containerd` cost
 ~70 MB idle for zero functional benefit on a single-service host.
 
 What it does (idempotent — safe to re-run as the update flow):
-1. Builds Next.js standalone **locally** (needs Node 22 + pnpm on your
-   machine). The host doesn't need pnpm or Next's build toolchain.
-2. Installs on the host via apt: nodejs 22 (from NodeSource), qpdf,
-   libjpeg-turbo-progs, python3-venv, rsync.
-3. Creates the `pdf-comp` service user + `/opt/pdf-comp/current/`.
-4. rsyncs `.next/standalone` + `.next/static` + `public` + `scripts` to
+1. Refuses to run unless your local Node major matches what the host runs —
+   the build happens here, the artifact runs there, and nothing downstream
+   would notice the mismatch. Override with `PDF_COMP_ALLOW_NODE_MISMATCH=1`.
+2. Builds Next.js standalone **locally**. The host needs neither pnpm nor
+   Next's build toolchain.
+3. Installs on the host via apt: nodejs from NodeSource at the `.nvmrc`
+   major, qpdf, libjpeg-turbo-progs, python3-venv, rsync.
+4. Creates the `pdf-comp` service user + `/opt/pdf-comp/current/`.
+5. rsyncs `.next/standalone` + `.next/static` + `public` + `scripts` to
    the host; builds `.venv` there from `scripts/requirements.txt`.
-5. Installs `/etc/systemd/system/pdf-comp.service` + `/etc/pdf-comp.env`,
+6. Installs `/etc/systemd/system/pdf-comp.service` + `/etc/pdf-comp.env`,
    enables and restarts the service (listens on `127.0.0.1:3127`,
    override with `PDF_COMP_PORT`).
-6. Creates a 2 GB swap file if the host has none.
-7. Prints a ready-to-paste nginx and Caddy snippet for the host's reverse
+7. Creates a 2 GB swap file if the host has none.
+8. Prints a ready-to-paste nginx and Caddy snippet for the host's reverse
    proxy.
 
 We do **not** run a reverse proxy ourselves — the production hosts already

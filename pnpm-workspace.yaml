@@ -1,7 +1,18 @@
-ignoredBuiltDependencies:
-  - msw
-  - sharp
-  - unrs-resolver
+# Neither package needs its build script to run: sharp comes from Next's
+# optional image pipeline (unused here — no next/image), unrs-resolver from
+# eslint-import-resolver-typescript, which falls back to its JS resolver.
+allowBuilds:
+  sharp: false
+  unrs-resolver: false
+
+# pnpm refuses lockfile entries published in the last 24h — the window where
+# a compromised npm release is most likely still unnoticed. Transitive deps
+# just resolve one patch back, but these two were upgraded deliberately and
+# their ranges demand the fresh version, so they need a recorded exemption.
+# Delete both lines once the versions age past the window; nothing breaks.
+minimumReleaseAgeExclude:
+  - knip@6.31.0
+  - shadcn@4.16.1
 
 overrides:
   postcss: '>=8.5.10'

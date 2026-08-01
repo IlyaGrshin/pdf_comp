@@ -15,6 +15,11 @@ const nextConfig: NextConfig = {
   // per-request scratch buffer from being warmed.
   images: { unoptimized: true },
   experimental: {
+    // TS 7 dropped the JS compiler API Next's type check normally calls, so
+    // run the project's own `tsc` binary instead. Removing typescript-eslint
+    // (replaced by oxlint) is what made TS 7 adoptable at all — it is the
+    // only remaining consumer of that API here.
+    useTypeScriptCli: true,
     // Load route entries on first request instead of at server boot.
     // Idle RSS shrinks by whatever the API route + Python-spawn glue
     // pulls in — small in absolute MB, but the app has one active

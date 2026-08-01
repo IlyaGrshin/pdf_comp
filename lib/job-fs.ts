@@ -42,6 +42,22 @@ export async function deleteJob(jobDir: string): Promise<void> {
   await fs.rm(jobDir, { recursive: true, force: true });
 }
 
+// Job dirs with a request still working on them. The sweeper ages dirs by
+// mtime, and a directory's mtime is stamped when an entry is created inside
+// it — i.e. when input.pdf is opened, at the *start* of the upload. A slow
+// upload plus a long compression can therefore cross JOB_TTL_MS while the
+// Python subprocess is still writing, and the sweeper would delete the
+// directory out from under it. Holding the dir for the request's lifetime
+// keeps the 10-minute promise for finished jobs without racing live ones.
+const heldJobs = new Set<string>();
+
+export function holdJob(jobDir: string): () => void {
+  heldJobs.add(jobDir);
+  return () => {
+    heldJobs.delete(jobDir);
+  };
+}
+
 let sweeperStarted = false;
 
 export function startSweeper(): void {
@@ -54,6 +70,7 @@ export function startSweeper(): void {
       await Promise.all(
         entries.map(async (entry) => {
           const dir = path.join(ROOT, entry);
+          if (heldJobs.has(dir)) return;
           try {
             const stat = await fs.stat(dir);
             if (now - stat.mtimeMs > JOB_TTL_MS) {
