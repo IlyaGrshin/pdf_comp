@@ -7,8 +7,9 @@
 #   scripts/deploy.sh root@vps.example.com
 #
 # What it does (idempotent — safe to re-run as the update flow):
-#   1. Builds Next.js standalone locally (needs Node 22 + pnpm here).
-#   2. Installs apt packages on the host: nodejs 22, qpdf,
+#   1. Builds Next.js standalone locally (needs pnpm here, on the same
+#      Node major the host runs — see the version check below).
+#   2. Installs apt packages on the host: nodejs, qpdf,
 #      libjpeg-turbo-progs, python3-venv.
 #   3. Creates the `pdf-comp` service user + /opt/pdf-comp/current.
 #   4. rsyncs .next/standalone + .next/static + public + scripts to
@@ -33,7 +34,49 @@ REMOTE="$1"
 INSTALL_DIR="/opt/pdf-comp/current"
 PORT="${PDF_COMP_PORT:-3127}"
 
+# .nvmrc is the single source of truth for the Node major: it feeds the
+# NodeSource install, the host's upgrade threshold, and the local build
+# check below. Bumping Node means editing one file.
+NODE_MAJOR=$(tr -dc '0-9' < .nvmrc 2>/dev/null || true)
+if [ -z "$NODE_MAJOR" ]; then
+    echo "cannot read a Node major from .nvmrc — run this from the repo root" >&2
+    exit 1
+fi
+
 step() { printf "\n→ %s\n" "$1"; }
+
+# The build runs here but the artifact runs there, and nothing else in this
+# script would notice a mismatch: `.next/standalone` ships traced
+# node_modules and a server.js emitted for whichever Node built them, so a
+# newer local major can bake in syntax the host's Node rejects — at request
+# time, not build time. Probing before the build also fails fast when the
+# host is unreachable.
+step "Checking Node major (local build vs host runtime)"
+HOST_NODE=$(ssh "$REMOTE" '/usr/bin/node -v 2>/dev/null || true' | cut -c2- | cut -d. -f1)
+# Absent, unparseable, or too old: provisioning below installs $NODE_MAJOR.
+case "$HOST_NODE" in
+    ''|*[!0-9]*) HOST_NODE="$NODE_MAJOR" ;;
+esac
+if [ "$HOST_NODE" -lt "$NODE_MAJOR" ]; then
+    HOST_NODE="$NODE_MAJOR"
+fi
+LOCAL_NODE=$(node -v 2>/dev/null | cut -c2- | cut -d. -f1 || true)
+if [ -z "$LOCAL_NODE" ]; then
+    echo "node not found on PATH — the Next.js build runs locally, not on the host" >&2
+    exit 1
+fi
+if [ "$LOCAL_NODE" != "$HOST_NODE" ]; then
+    if [ "${PDF_COMP_ALLOW_NODE_MISMATCH:-}" = "1" ]; then
+        echo "warning: building on Node $LOCAL_NODE for a host running $HOST_NODE (override set)" >&2
+    else
+        echo "Node major mismatch: building on $LOCAL_NODE, host runs $HOST_NODE." >&2
+        echo "Put Node $HOST_NODE first on PATH so the build matches the runtime" >&2
+        echo "(nvm use $HOST_NODE, or brew's node@$HOST_NODE/bin), or set" >&2
+        echo "PDF_COMP_ALLOW_NODE_MISMATCH=1 to deploy anyway." >&2
+        exit 1
+    fi
+fi
+echo "local $LOCAL_NODE, host $HOST_NODE"
 
 step "Building Next.js standalone locally"
 pnpm install --frozen-lockfile
@@ -52,17 +95,19 @@ cp -R scripts "$STAGE/scripts"
 mkdir -p "$STAGE/tmp"
 
 step "Provisioning host packages + user (idempotent)"
-ssh "$REMOTE" bash <<'REMOTE_PROVISION'
+# NODE_MAJOR comes from .nvmrc via the assignment prefix; the heredoc stays
+# quoted so nothing else here is expanded by the local shell.
+ssh "$REMOTE" NODE_MAJOR="$NODE_MAJOR" bash <<'REMOTE_PROVISION'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
 
-# Node 22 from NodeSource — Debian bookworm ships 18, which is too old
-# for Next.js 16. Always install: the systemd unit hard-codes
-# `/usr/bin/node`, and skipping install just because an nvm/asdf node
-# is on PATH would leave the service pointing at a missing binary.
+# Node from NodeSource — Debian bookworm ships 18, which is too old for
+# Next.js 16. Always install: the systemd unit hard-codes `/usr/bin/node`,
+# and skipping install just because an nvm/asdf node is on PATH would leave
+# the service pointing at a missing binary.
 if ! dpkg -l nodejs 2>/dev/null | grep -q '^ii  nodejs' \
-   || [ "$(/usr/bin/node -v 2>/dev/null | cut -c2- | cut -d. -f1)" -lt 22 ]; then
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
+   || [ "$(/usr/bin/node -v 2>/dev/null | cut -c2- | cut -d. -f1)" -lt "$NODE_MAJOR" ]; then
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - >/dev/null
     apt-get install -y --no-install-recommends nodejs >/dev/null
 fi
 

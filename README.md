@@ -28,8 +28,8 @@ cd pdf_comp
 sudo ./scripts/setup.sh
 ```
 
-The script sets up a 2 GB swap file, installs Node 22 + qpdf +
-libjpeg-turbo, builds Next.js standalone in place, drops
+The script sets up a 2 GB swap file, installs Node (major taken from
+`.nvmrc`) + qpdf + libjpeg-turbo, builds Next.js standalone in place, drops
 `pdf-comp.service` into systemd, and starts the app on `127.0.0.1:3127`.
 It prints an nginx `location /pdf_comp/ { ... }` block at the end —
 paste it into the appropriate `server { ... }` block on the host and
@@ -54,7 +54,8 @@ rather not put the source or a build toolchain on the VPS.
 ## Local dev
 
 ```bash
-brew install ghostscript qpdf mozjpeg pnpm
+brew install qpdf mozjpeg node@24
+corepack enable            # pnpm version comes from package.json
 python3 -m venv --copies .venv
 .venv/bin/pip install -r scripts/requirements.txt
 pnpm install

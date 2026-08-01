@@ -64,6 +64,15 @@ streamed download  →  job dir deleted on close
 - **Comments explain WHY, not WHAT.** Especially flags/thresholds with
   empirical justification (a past failure mode, a measurement). Anything that
   reads like a session diary or a pull-request description should be deleted.
+- **oxlint, not ESLint.** `eslint-config-next` drags in typescript-eslint,
+  which refuses to run under TypeScript 7 (upstream closed that request as
+  not planned); oxlint has no dependency on the TS compiler API, which is
+  what makes TS 7 usable here at all. Rule parity with the old config was
+  verified against planted violations, React Compiler rules included — those
+  live in oxlint's `nursery` category and are switched on explicitly as
+  `react/react-compiler` in `.oxlintrc.json`. That rule is experimental
+  upstream and its diagnostics may shift; if it ever regresses, oxlint can
+  load `eslint-plugin-react-hooks` directly through its `jsPlugins` option.
 
 ## Auto-tuning
 
@@ -101,11 +110,18 @@ memory detection misreports).
 ## Local dev
 
 ```bash
-brew install qpdf mozjpeg pnpm
+brew install qpdf mozjpeg node@24 gnu-time   # gnu-time only for bench/
+corepack enable                              # pnpm version comes from package.json
 python3 -m venv .venv && .venv/bin/pip install -r scripts/requirements.txt
 pnpm install
 pnpm dev    # → http://localhost:3000/pdf_comp/
 ```
+
+**Toolchain versions live in exactly one place each** — `.nvmrc` for the Node
+major, `packageManager` in `package.json` for pnpm. `scripts/deploy.sh` and
+`scripts/setup.sh` read `.nvmrc` rather than hardcoding a major, and corepack
+reads `packageManager`. Bumping either means editing one file; nothing else
+needs to be kept in sync.
 
 Direct script use (handy when tuning compression parameters without the web
 layer):
@@ -125,18 +141,21 @@ over the previous containerized layout because `dockerd + containerd` cost
 ~70 MB idle for zero functional benefit on a single-service host.
 
 What it does (idempotent — safe to re-run as the update flow):
-1. Builds Next.js standalone **locally** (needs Node 22 + pnpm on your
-   machine). The host doesn't need pnpm or Next's build toolchain.
-2. Installs on the host via apt: nodejs 22 (from NodeSource), qpdf,
-   libjpeg-turbo-progs, python3-venv, rsync.
-3. Creates the `pdf-comp` service user + `/opt/pdf-comp/current/`.
-4. rsyncs `.next/standalone` + `.next/static` + `public` + `scripts` to
+1. Refuses to run unless your local Node major matches what the host runs —
+   the build happens here, the artifact runs there, and nothing downstream
+   would notice the mismatch. Override with `PDF_COMP_ALLOW_NODE_MISMATCH=1`.
+2. Builds Next.js standalone **locally**. The host needs neither pnpm nor
+   Next's build toolchain.
+3. Installs on the host via apt: nodejs from NodeSource at the `.nvmrc`
+   major, qpdf, libjpeg-turbo-progs, python3-venv, rsync.
+4. Creates the `pdf-comp` service user + `/opt/pdf-comp/current/`.
+5. rsyncs `.next/standalone` + `.next/static` + `public` + `scripts` to
    the host; builds `.venv` there from `scripts/requirements.txt`.
-5. Installs `/etc/systemd/system/pdf-comp.service` + `/etc/pdf-comp.env`,
+6. Installs `/etc/systemd/system/pdf-comp.service` + `/etc/pdf-comp.env`,
    enables and restarts the service (listens on `127.0.0.1:3127`,
    override with `PDF_COMP_PORT`).
-6. Creates a 2 GB swap file if the host has none.
-7. Prints a ready-to-paste nginx and Caddy snippet for the host's reverse
+7. Creates a 2 GB swap file if the host has none.
+8. Prints a ready-to-paste nginx and Caddy snippet for the host's reverse
    proxy.
 
 We do **not** run a reverse proxy ourselves — the production hosts already

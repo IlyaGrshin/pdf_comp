@@ -10,8 +10,8 @@
 #
 # What it does (idempotent — re-running updates the deployment):
 #   1. Creates a 2 GB swap file if missing (spike headroom for big PDFs).
-#   2. Installs apt packages: nodejs 22 (NodeSource), python3-venv, qpdf,
-#      libjpeg-turbo-progs, pnpm.
+#   2. Installs apt packages: nodejs from NodeSource (major read from
+#      .nvmrc), python3-venv, qpdf, libjpeg-turbo-progs, pnpm.
 #   3. `pnpm install --frozen-lockfile && pnpm build` — builds Next.js
 #      standalone on the host itself.
 #   4. Stages standalone + static + public + scripts under
@@ -30,6 +30,14 @@ PORT="${PDF_COMP_PORT:-3127}"
 INSTALL_DIR="/opt/pdf-comp/current"
 SRC_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
+# Same single source of truth as scripts/deploy.sh — see the note there.
+# Read via $SRC_DIR: the apt step below runs before we cd into the repo.
+NODE_MAJOR=$(tr -dc '0-9' < "$SRC_DIR/.nvmrc" 2>/dev/null || true)
+if [ -z "$NODE_MAJOR" ]; then
+    echo "cannot read a Node major from $SRC_DIR/.nvmrc" >&2
+    exit 1
+fi
+
 step() { printf "\n→ %s\n" "$1"; }
 
 step "Swap (2 GB if absent)"
@@ -46,18 +54,20 @@ export DEBIAN_FRONTEND=noninteractive
 # Always resolve Node from the apt package — the systemd unit hard-codes
 # `/usr/bin/node`, so we can't rely on a nvm/asdf install on PATH.
 if ! dpkg -l nodejs 2>/dev/null | grep -q '^ii  nodejs' \
-   || [ "$(/usr/bin/node -v 2>/dev/null | cut -c2- | cut -d. -f1)" -lt 22 ]; then
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
+   || [ "$(/usr/bin/node -v 2>/dev/null | cut -c2- | cut -d. -f1)" -lt "$NODE_MAJOR" ]; then
+    curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash - >/dev/null
     apt-get install -y --no-install-recommends nodejs >/dev/null
 fi
 apt-get update >/dev/null
 apt-get install -y --no-install-recommends \
     python3 python3-venv qpdf libjpeg-turbo-progs rsync >/dev/null
-if ! command -v pnpm >/dev/null 2>&1; then
-    # corepack ships with the NodeSource nodejs; pin the pnpm major here.
-    corepack enable
-    corepack prepare pnpm@10 --activate
-fi
+# corepack ships with the NodeSource nodejs. Which pnpm it installs comes
+# from package.json's `packageManager` field — the same single-source rule
+# .nvmrc gives Node, so the version is pinned in exactly one place and CI,
+# the host and a laptop cannot drift apart. Enable unconditionally: an
+# unrelated global pnpm already on PATH would otherwise shadow the pin.
+export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+corepack enable
 
 step "Service user + install dir"
 # Dedicated user name (not the generic `app`) so a co-hosted service
