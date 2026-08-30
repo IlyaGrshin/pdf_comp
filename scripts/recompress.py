@@ -30,8 +30,8 @@ import subprocess
 import sys
 import tempfile
 import time
-from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict, deque
+from concurrent.futures import Future, ThreadPoolExecutor
 
 import pikepdf
 from pikepdf import Pdf, PdfImage, Name, Stream
@@ -145,7 +145,7 @@ def recompress_pdf(input_path, output_path,
     untouched = re_encoded = downsampled = errored = 0
     by_hash: "defaultdict[str, list[Stream]]" = defaultdict(list)
 
-    # ---- Phase 1a: walk + decode (sequential, main thread) ----
+    # ---- Phase 1a: walk, decode, and encode within a bounded window ----
     # Two early-exits before the expensive decode:
     #   (a) raw-byte hash already seen → this object is a byte-identical
     #       duplicate of one we'll process; route it through dedup directly,
@@ -153,13 +153,44 @@ def recompress_pdf(input_path, output_path,
     #       the same logo/header appears N times.
     #   (b) /Width × /Height from the object dict shows the image is too small
     #       to be worth touching → skip decode entirely.
-    pending: list[tuple[Stream, bytes, dict]] = []
+    #
+    # Each decoded image is handed to the pool immediately and the bitmap is
+    # dropped as soon as its encode returns, so only `window` of them exist at
+    # once. Accumulating every bitmap first and encoding afterwards peaked at
+    # 957 MB of RSS on a 9.3 MB Figma export (298 images, 477 MB of raw
+    # bitmaps) — the ceiling that keeps concurrency at 1 on a 2 GB host, since
+    # MemoryMax there is 1700 MB. What survives the window is the *encoded*
+    # bytes, which are two orders of magnitude smaller.
+    #
+    # The results cannot be applied here: an object decoded early can still
+    # pick up aliases late in the walk, and phase 1c needs the complete alias
+    # list. Only the bitmaps are freed early, not the bookkeeping.
+    done: list[tuple[Stream, bytes, dict]] = []
+    inflight: "deque[tuple[Stream, bytes, Future, int]]" = deque()
+    inflight_bytes = 0
+    # Two per worker keeps the pool fed while the main thread decodes the next
+    # image. A count alone is not a memory bound, though: figma-1.pdf contains
+    # 3884x2590 RGBA images at ~40 MB each, so sixteen of those in flight is
+    # 640 MB. The byte budget is what holds the ceiling; the count is only
+    # there to stop thousands of thumbnails from queueing up.
+    window = max(2, workers * 2)
+    inflight_budget = 256 * 1024 * 1024
     seen_raw: dict[str, Stream] = {}
     aliases: "defaultdict[tuple, list[Stream]]" = defaultdict(list)
     # Untouched-first objects are deferred until aliases are fully collected:
     # an object marked untouched on iteration 5 may pick up aliases on
     # iteration 30, so we record (obj, raw_hash) and finalize after the loop.
     untouched_first: list[tuple[Stream, str]] = []
+
+    def drain(max_items, max_bytes):
+        """Collect finished encodes until the window fits both bounds."""
+        nonlocal inflight_bytes
+        while inflight and (len(inflight) > max_items or inflight_bytes > max_bytes):
+            o, cb, fut, nbytes = inflight.popleft()
+            done.append((o, cb, fut.result()))
+            inflight_bytes -= nbytes
+
+    pool = ThreadPoolExecutor(max_workers=workers)
     for obj in pdf.objects:
         if not isinstance(obj, Stream):
             continue
@@ -200,26 +231,31 @@ def recompress_pdf(input_path, output_path,
             continue
 
         is_gray = pil.mode in ("L", "1")
-        pending.append((obj, current_bytes, {
+        bitmap_bytes = pil.width * pil.height * len(pil.getbands())
+        # Block here rather than before the decode: `pil` already exists, so
+        # waiting first would just hold one extra bitmap while we wait. Leaving
+        # room for it means draining to one under each bound.
+        drain(window - 1, max(0, inflight_budget - bitmap_bytes))
+        inflight.append((obj, current_bytes, pool.submit(_resize_and_encode, {
             "pil": pil,
             "max_long": max_long,
             "quality": gray_q if is_gray else color_q,
-        }))
+        }), bitmap_bytes))
+        inflight_bytes += bitmap_bytes
+        # Drop the main thread's handle; the worker's dict is the last
+        # reference and it dies with the task.
+        del pil
+
+    drain(0, 0)
+    pool.shutdown()
 
     for obj, raw_hash in untouched_first:
         group = by_hash[raw_hash]
         group.append(obj)
         group.extend(aliases.get(obj.objgen, []))
 
-    # ---- Phase 1b: parallel encode ----
-    if pending:
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            results = list(pool.map(_resize_and_encode, [w[2] for w in pending]))
-    else:
-        results = []
-
     # ---- Phase 1c: apply results (sequential, main thread — pikepdf writes) ----
-    for (obj, current_bytes, _), result in zip(pending, results):
+    for obj, current_bytes, result in done:
         obj_aliases = aliases.get(obj.objgen, [])
         if result.get("error"):
             errored += 1
