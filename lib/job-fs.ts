@@ -6,6 +6,7 @@ const ROOT = path.join(process.cwd(), "tmp");
 const JOB_TTL_MS = 10 * 60 * 1000;
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
 const JOB_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const JOB_ID_RE_GLOBAL = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g;
 
 type Job = {
   id: string;
@@ -27,6 +28,34 @@ export async function createJob(): Promise<Job> {
 export function jobDirOf(jobId: string): string | null {
   if (!JOB_ID_RE.test(jobId)) return null;
   return path.join(ROOT, jobId);
+}
+
+// Total bytes currently parked under tmp/. Walked rather than tracked with a
+// counter so a job dir left behind by an OOM-killed subprocess still counts
+// against the budget — a counter would drift every time cleanup was skipped.
+// Cheap by construction: MAX_INFLIGHT_JOBS bounds the live dirs and each holds
+// at most input.pdf + final.pdf.
+export async function tmpBytes(): Promise<number> {
+  const entries = await fs.readdir(ROOT, { withFileTypes: true }).catch(() => []);
+  const perDir = await Promise.all(
+    entries.map(async (entry) => {
+      if (!entry.isDirectory()) return 0;
+      const dir = path.join(ROOT, entry.name);
+      const files = await fs.readdir(dir).catch(() => [] as string[]);
+      const sizes = await Promise.all(
+        files.map((f) => fs.stat(path.join(dir, f)).then((st) => st.size).catch(() => 0)),
+      );
+      return sizes.reduce((a, b) => a + b, 0);
+    }),
+  );
+  return perDir.reduce((a, b) => a + b, 0);
+}
+
+// Job directory paths carry the jobId, and the jobId *is* the download
+// capability for that job — anyone reading it out of a log line can fetch the
+// document. Strip both the root and the id before anything reaches a log.
+export function redactJobPaths(text: string): string {
+  return text.split(ROOT).join("<tmp>").replace(JOB_ID_RE_GLOBAL, "<job>");
 }
 
 export async function jobIsExpired(jobDir: string): Promise<boolean> {
