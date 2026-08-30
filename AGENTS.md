@@ -57,6 +57,24 @@ streamed download  →  job dir deleted on close
   decode, and against the decoder's own dimensions after (a JPEG carries its
   size in the SOF marker, so the dict can understate it). Oversized images pass
   through untouched, never corrupted, and are counted as `skipped_oversized`.
+- **Both encoders stream; neither materialises a second full-size buffer.**
+  `encode_jpeg` hands cjpeg a temp file via `pil.save(tf, format="PPM")`.
+  Building the PNM by hand as `header + pil.tobytes()` kept the bitmap, the
+  `tobytes()` result and the concatenation alive together — about 9 bytes per
+  pixel where the caller reserved 6, and 9 against 4 for a palette image.
+  Sixty 2400x1800 images at eight workers peaked at 389 MB (494 MB palette)
+  against a 256 MB budget. Pillow's PPM output is byte-identical to the
+  hand-built header plus `tobytes()` for both P5 and P6, verified against
+  cjpeg. Any future change here must keep the encoder fed without a full-size
+  intermediate, or `_bitmap_bytes` stops being a bound.
+- **The oversize cap applies to an image and its soft mask as a pair.**
+  `/SMask` is a separate Image XObject, so capping each stream independently
+  can skip a colour image while its mask still goes through the resize path:
+  a 7000x6000 image with a 4000x3000 mask came back as 7000x6000 colour and a
+  2400x1800 mask, alpha quantized on a different grid than the pixels it
+  masks. `_pair_oversized` checks both directions. The post-decode backstop
+  cannot pair — establishing the partner's true size means decoding it — and
+  only fires on files whose dict understates their own images.
 - **The in-flight budget counts the copies, not just the source.** A work item
   peaks at the source bitmap *plus* one full-size copy — the converted image
   while `convert()` still holds the original, or the buffer `tobytes()` builds
@@ -127,11 +145,15 @@ Admission is gated **before** the body is written to disk, on two counters:
   bound anything: `activeCount` does not rise until the upload is fully on
   disk, so any number of requests passed the check at once and every one of
   them wrote up to `maxBytes` first.
-- `DISK_BUDGET_BYTES` — total bytes under `tmp/`, walked per request. A
-  concurrency cap does not bound the disk on its own: a finished job stays
-  downloadable for the promised 10 minutes, so a client that uploads and
-  never downloads parks `maxBytes` per request while staying inside every
-  other limit. Override with `MAX_DISK_BYTES`.
+- `DISK_BUDGET_BYTES` — total bytes under `tmp/`, walked per request, plus
+  what admitted jobs have reserved. A concurrency cap does not bound the disk
+  on its own: a finished job stays downloadable for the promised 10 minutes,
+  so a client that uploads and never downloads parks `maxBytes` per request
+  while staying inside every other limit. Each admitted job charges
+  `JOB_DISK_RESERVE_BYTES` (input at the cap plus `final.pdf` beside it)
+  synchronously, before the request awaits anything — a bare budget check is
+  a snapshot, and every slot admitted against the same snapshot would then
+  write its worst case on top of it. Override with `MAX_DISK_BYTES`.
 
 `MAX_RAM_BYTES` env var overrides the autotune (useful when Node's container
 memory detection misreports).

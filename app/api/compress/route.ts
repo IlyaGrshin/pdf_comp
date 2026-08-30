@@ -12,6 +12,7 @@ import {
   LIMITS,
   availableMemory,
   DISK_BUDGET_BYTES,
+  JOB_DISK_RESERVE_BYTES,
   MAX_INFLIGHT_JOBS,
   MEMORY_PRESSURE_FLOOR,
 } from "@/lib/runtime-limits";
@@ -28,19 +29,29 @@ function err(code: ErrorCode, status: number, init?: ResponseInit): Response {
   return Response.json({ error: code }, { status, ...init });
 }
 
-// Admission counter, held across the whole request rather than just the
+// Admission counters, held across the whole request rather than just the
 // compression. See MAX_INFLIGHT_JOBS for why gating on `compressionLimit`
 // alone let unbounded uploads through.
+//
+// The disk reserve is charged here, synchronously, before the request awaits
+// anything: a budget check on its own is a snapshot, and every slot admitted
+// against the same snapshot could then write its worst case on top of it,
+// putting real usage a job or two past the supposed ceiling. Charging first
+// means a concurrent request sees this one's claim rather than the disk it
+// has not filled yet.
 let inflightJobs = 0;
+let reservedBytes = 0;
 
 function acquireJobSlot(): (() => void) | null {
   if (inflightJobs >= MAX_INFLIGHT_JOBS) return null;
   inflightJobs += 1;
+  reservedBytes += JOB_DISK_RESERVE_BYTES;
   let released = false;
   return () => {
     if (released) return;
     released = true;
     inflightJobs -= 1;
+    reservedBytes -= JOB_DISK_RESERVE_BYTES;
   };
 }
 
@@ -66,8 +77,10 @@ export async function POST(req: Request) {
     }
 
     // Same idea one resource over: finished jobs awaiting download hold disk
-    // that no in-flight counter sees.
-    if ((await tmpBytes()) >= DISK_BUDGET_BYTES) {
+    // that no in-flight counter sees. Bytes already written by a live job are
+    // counted twice — once here, once in its reservation — which errs toward
+    // refusing work rather than overrunning the budget.
+    if ((await tmpBytes()) + reservedBytes > DISK_BUDGET_BYTES) {
       return err("BUSY", 503, { headers: { "retry-after": "60" } });
     }
 

@@ -73,14 +73,8 @@ MAX_DECODE_PIXELS = INFLIGHT_BUDGET_BYTES // 7
 def encode_jpeg(pil, quality):
     """Encode PIL image as JPEG; prefer cjpeg, fall back to Pillow."""
     if CJPEG:
-        if pil.mode == "L":
-            marker = b"P5"
-        else:
-            marker = b"P6"
-            if pil.mode != "RGB":
-                pil = pil.convert("RGB")
-        w, h = pil.size
-        pnm = b"%s\n%d %d\n255\n" % (marker, w, h) + pil.tobytes()
+        if pil.mode != "L" and pil.mode != "RGB":
+            pil = pil.convert("RGB")
         # Hand cjpeg a file rather than piping the PNM to its stdin.
         # subprocess.run(input=...) goes through communicate(), which feeds the
         # pipe in select.PIPE_BUF-sized slices under a selector loop — 512 B on
@@ -96,8 +90,17 @@ def encode_jpeg(pil, quality):
         # and a SIGKILL from the compress.ts timeout or the cgroup OOM killer
         # skips any cleanup we could write. Here the kernel reclaims the
         # blocks when the fd dies with the process, kill signal or not.
+        #
+        # Pillow writes the PNM straight into the fd rather than us building
+        # it: `header + pil.tobytes()` had the bitmap, the bytes object and
+        # the concatenation result all live at once — about 9 bytes per pixel
+        # where the caller's budget reserved 6, and 9 against 4 for a palette
+        # image. Sixty 2400x1800 images at eight workers peaked at 389 MB
+        # (494 MB palette) against a 256 MB budget. Pillow's writer chunks
+        # through a 64 KB buffer, and its output is byte-identical to the
+        # hand-built header plus tobytes() for both P5 and P6.
         with tempfile.TemporaryFile() as tf:
-            tf.write(pnm)
+            pil.save(tf, format="PPM")
             tf.seek(0)
             return subprocess.run(
                 [CJPEG, "-quality", str(quality), "-optimize", "-progressive"],
@@ -113,12 +116,12 @@ def encode_jpeg(pil, quality):
 def _bitmap_bytes(pil):
     """Upper bound on the bytes one work item holds at its peak.
 
-    The source bitmap plus one full-size copy: either the converted image
-    while convert() still holds the original, or the buffer tobytes() builds
-    for the encoder. Counting the source alone under-budgets palette images
+    The source bitmap plus the converted copy that lives alongside it while
+    convert() runs. Counting the source alone under-budgets palette images
     threefold — mode "P" is one byte per pixel until the worker turns it into
-    three-byte RGB. Reads only .mode/.width/.height, so a lazily-opened JPEG
-    stays lazy here.
+    three-byte RGB. Nothing downstream exceeds this: both encoders stream into
+    their destination rather than materialising another full-size buffer.
+    Reads only .mode/.width/.height, so a lazily-opened JPEG stays lazy here.
     """
     src = len(pil.getbands())
     dst = 1 if pil.mode in ("1", "L") else 3
@@ -224,6 +227,36 @@ def recompress_pdf(input_path, output_path,
             done.append((o, cb, fut.result()))
             inflight_bytes -= nbytes
 
+    # Map each soft mask back to the image carrying it. The oversize cap has
+    # to apply to the pair, not to each stream on its own: /SMask is a
+    # separate Image XObject, so skipping an over-cap colour image while its
+    # mask still goes through the resize path (or the reverse) would leave the
+    # two sampled on different grids — exactly the tearing the smask-DPI
+    # invariant exists to prevent.
+    smask_parent: dict[tuple, Stream] = {}
+    for obj in pdf.objects:
+        if not isinstance(obj, Stream) or obj.get("/Subtype") != Name.Image:
+            continue
+        smask = obj.get("/SMask")
+        if isinstance(smask, Stream):
+            smask_parent[smask.objgen] = obj
+
+    def _declared_pixels(obj):
+        try:
+            return int(obj.get("/Width", 0) or 0) * int(obj.get("/Height", 0) or 0)
+        except Exception:
+            return 0
+
+    def _pair_oversized(obj):
+        """True if this image, or the stream it is paired with, is over the cap."""
+        if _declared_pixels(obj) > MAX_DECODE_PIXELS:
+            return True
+        smask = obj.get("/SMask")
+        if isinstance(smask, Stream) and _declared_pixels(smask) > MAX_DECODE_PIXELS:
+            return True
+        parent = smask_parent.get(obj.objgen)
+        return parent is not None and _declared_pixels(parent) > MAX_DECODE_PIXELS
+
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
         for obj in pdf.objects:
@@ -256,7 +289,7 @@ def recompress_pdf(input_path, output_path,
             # Before the decode, because the decode is what allocates: pikepdf
             # builds non-JPEG images with Image.frombuffer, which sizes its buffer
             # from these very numbers and never consults MAX_IMAGE_PIXELS.
-            if w * h > MAX_DECODE_PIXELS:
+            if _pair_oversized(obj):
                 untouched_first.append((obj, raw_hash))
                 skipped_oversized += 1
                 continue
@@ -274,7 +307,12 @@ def recompress_pdf(input_path, output_path,
             # Again, now against the decoder's own idea of the size. A JPEG
             # carries its dimensions in the SOF marker, so /Width and /Height can
             # understate it; Image.open() is lazy, so nothing is allocated yet and
-            # the bitmap only appears once a worker touches it.
+            # the bitmap only appears once a worker touches it. This backstop is
+            # about memory alone and cannot pair with a soft mask the way the
+            # check above does — establishing the partner's true size would mean
+            # decoding it, which is the allocation being avoided. A file whose
+            # dict understates its own images is malformed either way; the pair
+            # rule holds for every PDF that declares its sizes honestly.
             if pil.width * pil.height > MAX_DECODE_PIXELS:
                 untouched_first.append((obj, raw_hash))
                 skipped_oversized += 1
