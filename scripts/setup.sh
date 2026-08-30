@@ -166,14 +166,32 @@ location /pdf_comp/ {
 
 Per-IP rate limit — add it. The app caps concurrency and disk, but stopping a
 single noisy client at the proxy is what keeps it from holding every slot.
-This goes OUTSIDE any server { … } block (e.g. in
+The zone goes OUTSIDE any server { … } block (e.g. in
 /etc/nginx/conf.d/pdf_comp-ratelimit.conf, or near the top of the site config):
 
     limit_req_zone \$binary_remote_addr zone=pdf_comp:10m rate=20r/m;
 
-…then inside the location block above:
+…and the limit itself on the upload endpoint alone, NOT on the prefix location
+above — there it would also meter the landing page, every _next asset, the
+health check and the downloads, so one cold page load could spend the whole
+burst and 503 a real user. An exact-match location inherits nothing, so the
+proxy lines are repeated:
 
+location = /pdf_comp/api/compress {
     limit_req zone=pdf_comp burst=10 nodelay;
+
+    proxy_pass http://127.0.0.1:$PORT;
+    proxy_http_version 1.1;
+    proxy_set_header Host \$host;
+    proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto \$scheme;
+
+    client_max_body_size 1100M;
+    proxy_request_buffering off;
+    proxy_buffering off;
+    proxy_read_timeout 600s;
+    proxy_send_timeout 600s;
+}
 
 This caps each client IP at ~20 compressions/min with a burst of 10.
 

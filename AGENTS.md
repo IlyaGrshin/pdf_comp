@@ -72,9 +72,18 @@ streamed download  →  job dir deleted on close
   can skip a colour image while its mask still goes through the resize path:
   a 7000x6000 image with a 4000x3000 mask came back as 7000x6000 colour and a
   2400x1800 mask, alpha quantized on a different grid than the pixels it
-  masks. `_pair_oversized` checks both directions. The post-decode backstop
-  cannot pair — establishing the partner's true size means decoding it — and
-  only fires on files whose dict understates their own images.
+  masks. `_pair_oversized` checks both directions, and two details it has to
+  get right: the reverse map keeps the *largest* image each mask is attached
+  to, because one `/SMask` stream may be shared by several XObjects and the
+  mask must be skipped if any of them is over the cap; and the check runs
+  **before** the raw-hash alias fast-path, because aliasing merges streams by
+  their bytes alone — two byte-identical masks can hang off differently sized
+  images, and the second would otherwise inherit the first one's resized bytes
+  while its own oversized image stayed untouched. Keeping oversized streams
+  out of `seen_raw` entirely is what makes an alias group uniformly
+  processable; they still dedup through `untouched_first`. The post-decode
+  backstop cannot pair — establishing the partner's true size means decoding
+  it — and only fires on files whose dict understates their own images.
 - **The in-flight budget counts the copies, not just the source.** A work item
   peaks at the source bitmap *plus* one full-size copy — the converted image
   while `convert()` still holds the original, or the buffer `tobytes()` builds

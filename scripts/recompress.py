@@ -233,29 +233,35 @@ def recompress_pdf(input_path, output_path,
     # mask still goes through the resize path (or the reverse) would leave the
     # two sampled on different grids — exactly the tearing the smask-DPI
     # invariant exists to prevent.
-    smask_parent: dict[tuple, Stream] = {}
-    for obj in pdf.objects:
-        if not isinstance(obj, Stream) or obj.get("/Subtype") != Name.Image:
-            continue
-        smask = obj.get("/SMask")
-        if isinstance(smask, Stream):
-            smask_parent[smask.objgen] = obj
-
     def _declared_pixels(obj):
         try:
             return int(obj.get("/Width", 0) or 0) * int(obj.get("/Height", 0) or 0)
         except Exception:
             return 0
 
+    # Largest colour image each soft mask is attached to. One /SMask stream may
+    # be shared by several XObjects, so this keeps the biggest rather than
+    # whichever came last: the mask has to be skipped if *any* image it masks
+    # is over the cap, or that image keeps full resolution while its alpha is
+    # resampled underneath it.
+    smask_parent_pixels: dict[tuple, int] = {}
+    for obj in pdf.objects:
+        if not isinstance(obj, Stream) or obj.get("/Subtype") != Name.Image:
+            continue
+        smask = obj.get("/SMask")
+        if isinstance(smask, Stream):
+            px = _declared_pixels(obj)
+            if px > smask_parent_pixels.get(smask.objgen, 0):
+                smask_parent_pixels[smask.objgen] = px
+
     def _pair_oversized(obj):
-        """True if this image, or the stream it is paired with, is over the cap."""
+        """True if this image, or any stream it is paired with, is over the cap."""
         if _declared_pixels(obj) > MAX_DECODE_PIXELS:
             return True
         smask = obj.get("/SMask")
         if isinstance(smask, Stream) and _declared_pixels(smask) > MAX_DECODE_PIXELS:
             return True
-        parent = smask_parent.get(obj.objgen)
-        return parent is not None and _declared_pixels(parent) > MAX_DECODE_PIXELS
+        return smask_parent_pixels.get(obj.objgen, 0) > MAX_DECODE_PIXELS
 
     pool = ThreadPoolExecutor(max_workers=workers)
     try:
@@ -271,6 +277,26 @@ def recompress_pdf(input_path, output_path,
                 continue
 
             raw_hash = hashlib.sha256(current_bytes).hexdigest()
+
+            # Ahead of the alias fast-path, not after it: aliasing merges two
+            # streams by their bytes alone, and two byte-identical soft masks
+            # can hang off differently sized colour images. Deciding later
+            # would let the second mask inherit the first one's resized bytes
+            # while its own oversized image stayed untouched — the grid
+            # mismatch this cap exists to avoid, rebuilt through the alias.
+            # Keeping oversized streams out of `seen_raw` entirely means an
+            # alias group is always uniformly processable. They still dedup:
+            # untouched_first groups them by raw hash for phase 2.
+            #
+            # Before the decode, too, because the decode is what allocates:
+            # pikepdf builds non-JPEG images with Image.frombuffer, which sizes
+            # its buffer from the declared dimensions and never consults
+            # MAX_IMAGE_PIXELS.
+            if _pair_oversized(obj):
+                untouched_first.append((obj, raw_hash))
+                skipped_oversized += 1
+                continue
+
             first = seen_raw.get(raw_hash)
             if first is not None:
                 aliases[first.objgen].append(obj)
@@ -285,13 +311,6 @@ def recompress_pdf(input_path, output_path,
             if w > 0 and h > 0 and w * h < MIN_PIXELS_TO_RECOMPRESS:
                 untouched_first.append((obj, raw_hash))
                 untouched += 1
-                continue
-            # Before the decode, because the decode is what allocates: pikepdf
-            # builds non-JPEG images with Image.frombuffer, which sizes its buffer
-            # from these very numbers and never consults MAX_IMAGE_PIXELS.
-            if _pair_oversized(obj):
-                untouched_first.append((obj, raw_hash))
-                skipped_oversized += 1
                 continue
 
             try:
