@@ -52,6 +52,23 @@ CJPEG = next((p for p in MOZJPEG_CANDIDATES if p and os.path.isfile(p)), None)
 # any savings from re-encoding. ~100×100 — covers logos, icons, sprite tiles.
 MIN_PIXELS_TO_RECOMPRESS = 10_000
 
+# Ceiling on the decoded bitmaps allowed in flight at once. Everything below
+# is expressed against it so the two bounds cannot drift apart.
+INFLIGHT_BUDGET_BYTES = 256 * 1024 * 1024
+
+# Upper pixel bound, the mirror of MIN_PIXELS_TO_RECOMPRESS: above this an
+# image is left untouched instead of decoded. The bound exists because the
+# decode allocates from the *declared* dimensions before anything can measure
+# it — Pillow's own MAX_IMAGE_PIXELS guard does not fire on the path pikepdf
+# uses for non-JPEG images (`Image.frombuffer`), so a 1.1 MB PDF declaring one
+# 20000x20000 Flate image drove peak RSS to 2701 MB with every other bound in
+# this file still holding. Worst case a work item costs 7 bytes per pixel
+# (RGBA source plus the RGB copy — see _bitmap_bytes), so this keeps a single
+# image inside the whole in-flight budget. ~38 Mpx also clears real content
+# with room to spare: 600 DPI A4 is 35 Mpx, a 4x full-bleed 1920x1080 Figma
+# slide is 33 Mpx.
+MAX_DECODE_PIXELS = INFLIGHT_BUDGET_BYTES // 7
+
 
 def encode_jpeg(pil, quality):
     """Encode PIL image as JPEG; prefer cjpeg, fall back to Pillow."""
@@ -93,6 +110,21 @@ def encode_jpeg(pil, quality):
     return buf.getvalue()
 
 
+def _bitmap_bytes(pil):
+    """Upper bound on the bytes one work item holds at its peak.
+
+    The source bitmap plus one full-size copy: either the converted image
+    while convert() still holds the original, or the buffer tobytes() builds
+    for the encoder. Counting the source alone under-budgets palette images
+    threefold — mode "P" is one byte per pixel until the worker turns it into
+    three-byte RGB. Reads only .mode/.width/.height, so a lazily-opened JPEG
+    stays lazy here.
+    """
+    src = len(pil.getbands())
+    dst = 1 if pil.mode in ("1", "L") else 3
+    return pil.width * pil.height * (src + dst)
+
+
 def _resize_and_encode(work):
     """Worker: convert mode, resize if oversized, encode JPEG. Pure CPU.
 
@@ -100,7 +132,10 @@ def _resize_and_encode(work):
     so this scales near-linearly in a ThreadPoolExecutor.
     """
     try:
-        pil = work["pil"]
+        # pop, not [] — the dict is the last reference to the source bitmap,
+        # and holding it here would keep the source alive alongside every
+        # copy convert()/resize() makes, doubling what the caller budgeted.
+        pil = work.pop("pil")
         mode = pil.mode
         if mode == "1":
             pil = pil.convert("L")
@@ -142,7 +177,7 @@ def recompress_pdf(input_path, output_path,
     t0 = time.time()
     pdf = Pdf.open(input_path)
 
-    untouched = re_encoded = downsampled = errored = 0
+    untouched = re_encoded = downsampled = errored = skipped_oversized = 0
     by_hash: "defaultdict[str, list[Stream]]" = defaultdict(list)
 
     # ---- Phase 1a: walk, decode, and encode within a bounded window ----
@@ -174,7 +209,6 @@ def recompress_pdf(input_path, output_path,
     # 640 MB. The byte budget is what holds the ceiling; the count is only
     # there to stop thousands of thumbnails from queueing up.
     window = max(2, workers * 2)
-    inflight_budget = 256 * 1024 * 1024
     seen_raw: dict[str, Stream] = {}
     aliases: "defaultdict[tuple, list[Stream]]" = defaultdict(list)
     # Untouched-first objects are deferred until aliases are fully collected:
@@ -191,63 +225,84 @@ def recompress_pdf(input_path, output_path,
             inflight_bytes -= nbytes
 
     pool = ThreadPoolExecutor(max_workers=workers)
-    for obj in pdf.objects:
-        if not isinstance(obj, Stream):
-            continue
-        if obj.get("/Subtype") != Name.Image:
-            continue
-        try:
-            current_bytes = obj.read_raw_bytes()
-        except Exception:
-            errored += 1
-            continue
+    try:
+        for obj in pdf.objects:
+            if not isinstance(obj, Stream):
+                continue
+            if obj.get("/Subtype") != Name.Image:
+                continue
+            try:
+                current_bytes = obj.read_raw_bytes()
+            except Exception:
+                errored += 1
+                continue
 
-        raw_hash = hashlib.sha256(current_bytes).hexdigest()
-        first = seen_raw.get(raw_hash)
-        if first is not None:
-            aliases[first.objgen].append(obj)
-            continue
-        seen_raw[raw_hash] = obj
+            raw_hash = hashlib.sha256(current_bytes).hexdigest()
+            first = seen_raw.get(raw_hash)
+            if first is not None:
+                aliases[first.objgen].append(obj)
+                continue
+            seen_raw[raw_hash] = obj
 
-        try:
-            w = int(obj.get("/Width", 0) or 0)
-            h = int(obj.get("/Height", 0) or 0)
-        except Exception:
-            w = h = 0
-        if w > 0 and h > 0 and w * h < MIN_PIXELS_TO_RECOMPRESS:
-            untouched_first.append((obj, raw_hash))
-            untouched += 1
-            continue
+            try:
+                w = int(obj.get("/Width", 0) or 0)
+                h = int(obj.get("/Height", 0) or 0)
+            except Exception:
+                w = h = 0
+            if w > 0 and h > 0 and w * h < MIN_PIXELS_TO_RECOMPRESS:
+                untouched_first.append((obj, raw_hash))
+                untouched += 1
+                continue
+            # Before the decode, because the decode is what allocates: pikepdf
+            # builds non-JPEG images with Image.frombuffer, which sizes its buffer
+            # from these very numbers and never consults MAX_IMAGE_PIXELS.
+            if w * h > MAX_DECODE_PIXELS:
+                untouched_first.append((obj, raw_hash))
+                skipped_oversized += 1
+                continue
 
-        try:
-            pil = PdfImage(obj).as_pil_image()
-        except Exception:
-            errored += 1
-            continue
+            try:
+                pil = PdfImage(obj).as_pil_image()
+            except Exception:
+                errored += 1
+                continue
 
-        if pil.width * pil.height < MIN_PIXELS_TO_RECOMPRESS:
-            untouched_first.append((obj, raw_hash))
-            untouched += 1
-            continue
+            if pil.width * pil.height < MIN_PIXELS_TO_RECOMPRESS:
+                untouched_first.append((obj, raw_hash))
+                untouched += 1
+                continue
+            # Again, now against the decoder's own idea of the size. A JPEG
+            # carries its dimensions in the SOF marker, so /Width and /Height can
+            # understate it; Image.open() is lazy, so nothing is allocated yet and
+            # the bitmap only appears once a worker touches it.
+            if pil.width * pil.height > MAX_DECODE_PIXELS:
+                untouched_first.append((obj, raw_hash))
+                skipped_oversized += 1
+                del pil
+                continue
 
-        is_gray = pil.mode in ("L", "1")
-        bitmap_bytes = pil.width * pil.height * len(pil.getbands())
-        # Block here rather than before the decode: `pil` already exists, so
-        # waiting first would just hold one extra bitmap while we wait. Leaving
-        # room for it means draining to one under each bound.
-        drain(window - 1, max(0, inflight_budget - bitmap_bytes))
-        inflight.append((obj, current_bytes, pool.submit(_resize_and_encode, {
-            "pil": pil,
-            "max_long": max_long,
-            "quality": gray_q if is_gray else color_q,
-        }), bitmap_bytes))
-        inflight_bytes += bitmap_bytes
-        # Drop the main thread's handle; the worker's dict is the last
-        # reference and it dies with the task.
-        del pil
+            is_gray = pil.mode in ("L", "1")
+            bitmap_bytes = _bitmap_bytes(pil)
+            # Block here rather than before the decode: `pil` already exists, so
+            # waiting first would just hold one extra bitmap while we wait. Leaving
+            # room for it means draining to one under each bound.
+            drain(window - 1, max(0, INFLIGHT_BUDGET_BYTES - bitmap_bytes))
+            inflight.append((obj, current_bytes, pool.submit(_resize_and_encode, {
+                "pil": pil,
+                "max_long": max_long,
+                "quality": gray_q if is_gray else color_q,
+            }), bitmap_bytes))
+            inflight_bytes += bitmap_bytes
+            # Drop the main thread's handle; the worker's dict is the last
+            # reference and it dies with the task.
+            del pil
 
-    drain(0, 0)
-    pool.shutdown()
+        drain(0, 0)
+    finally:
+        # cancel_futures so an exception escaping the walk does not leave
+        # the interpreter's atexit hook joining a queue of encodes nobody
+        # will read.
+        pool.shutdown(wait=True, cancel_futures=True)
 
     for obj, raw_hash in untouched_first:
         group = by_hash[raw_hash]
@@ -341,6 +396,7 @@ def recompress_pdf(input_path, output_path,
 
     return {
         "untouched": untouched,
+        "skipped_oversized": skipped_oversized,
         "re_encoded": re_encoded,
         "downsampled": downsampled,
         "errored": errored,
