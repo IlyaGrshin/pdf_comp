@@ -18,9 +18,9 @@
 #      enables + restarts the service (listens on 127.0.0.1:$PORT).
 #   6. Creates a 2 GB swap file if the host has none.
 #
-# After it finishes, add ONE block to your existing nginx (snippets
-# printed at the end). The script does not touch your reverse proxy
-# or HTTPS.
+# After it finishes, add the two nginx blocks it prints (a rate-limit zone
+# and the location) to your existing config. The script does not touch your
+# reverse proxy or HTTPS.
 
 set -euo pipefail
 
@@ -217,8 +217,13 @@ REMOTE_SWAP
 step "Done — app is listening on 127.0.0.1:$PORT"
 cat <<EOF
 
-Add this block to your existing nginx server { … } for the host,
-then reload nginx:
+Add BOTH blocks to your existing nginx config for the host, then reload it.
+The rate limit is not decoration: the app caps concurrency and disk, but the
+cheapest way to keep a single client from occupying every slot is to stop it
+at the proxy.
+
+──── nginx (OUTSIDE any server { … } block — e.g. /etc/nginx/conf.d/) ────
+limit_req_zone \$binary_remote_addr zone=pdf_comp:10m rate=20r/m;
 
 ──── nginx (inside the matching server { … } block) ────
 location /pdf_comp/ {
@@ -227,6 +232,9 @@ location /pdf_comp/ {
     proxy_set_header Host \$host;
     proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto \$scheme;
+
+    # ~20 compressions/min per client IP, bursting to 10.
+    limit_req zone=pdf_comp burst=10 nodelay;
 
     # Streaming uploads + downloads — never buffer (1 GB-class files).
     client_max_body_size 1100M;

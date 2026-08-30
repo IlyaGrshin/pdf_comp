@@ -48,6 +48,23 @@ streamed download  →  job dir deleted on close
   different grid → visible block tearing on transparency edges at zoom.
 - **pikepdf is NOT thread-safe for writes.** Only the pure-CPU phase
   (decode → resize → encode) runs in workers. Object writes stay on main.
+- **Nothing is decoded before its size is known to be bounded.** The decode
+  allocates from the image's declared dimensions, and Pillow's own
+  `MAX_IMAGE_PIXELS` bomb guard does not fire on `Image.frombuffer`, the path
+  pikepdf takes for non-JPEG images. A 1.1 MB PDF declaring one 20000×20000
+  Flate image drove peak RSS to 2701 MB with every other bound in place.
+  `MAX_DECODE_PIXELS` is checked twice — against the object dict before the
+  decode, and against the decoder's own dimensions after (a JPEG carries its
+  size in the SOF marker, so the dict can understate it). Oversized images pass
+  through untouched, never corrupted, and are counted as `skipped_oversized`.
+- **The in-flight budget counts the copies, not just the source.** A work item
+  peaks at the source bitmap *plus* one full-size copy — the converted image
+  while `convert()` still holds the original, or the buffer `tobytes()` builds
+  for the encoder. Budgeting the source alone under-counts palette images
+  threefold: mode `P` is one byte per pixel right up until the worker turns it
+  into three-byte RGB. `_resize_and_encode` must `pop` the source out of the
+  work dict, not read it — keeping the dict entry alive pins the original
+  next to every copy and doubles what was budgeted.
 - **Don't add `/sRGB` even "for testing".** It's a known footgun.
 - **The upload is a raw body, never `multipart/form-data`.** `req.formData()`
   materialises the whole part in memory before returning a `File`: measured
@@ -102,6 +119,19 @@ at startup and computes:
 returns `503 BUSY` if the host is memory-tight (Linux only; macOS skips the
 check because `os.freemem()` under-reports by an order of magnitude — it
 omits reclaimable cache).
+
+Admission is gated **before** the body is written to disk, on two counters:
+
+- `MAX_INFLIGHT_JOBS` (= `concurrency + 1`) — a slot is held for the whole
+  request, upload included. Gating on the `pLimit` counters alone did not
+  bound anything: `activeCount` does not rise until the upload is fully on
+  disk, so any number of requests passed the check at once and every one of
+  them wrote up to `maxBytes` first.
+- `DISK_BUDGET_BYTES` — total bytes under `tmp/`, walked per request. A
+  concurrency cap does not bound the disk on its own: a finished job stays
+  downloadable for the promised 10 minutes, so a client that uploads and
+  never downloads parks `maxBytes` per request while staying inside every
+  other limit. Override with `MAX_DISK_BYTES`.
 
 `MAX_RAM_BYTES` env var overrides the autotune (useful when Node's container
 memory detection misreports).
@@ -186,6 +216,10 @@ Four layers, no monitoring required:
 2. systemd cgroup limits (`MemoryHigh=1400M` throttles/reclaims before
    `MemoryMax=1700M` OOM-kills). Python is usually the target; Node
    sees `SubprocessError`, returns 500 to the user, service stays up.
+   `MemorySwapMax=0` — the host swapfile exists for the OS and the reverse
+   proxy, not for a compression job. A job allowed to swap thrashes the whole
+   box for minutes before `MemoryMax` fires; denying it turns a host-wide
+   degradation into a fast local kill.
 3. `Restart=always` in the unit — covers the rare case where the OOM
    target is Node itself.
 4. journald default rotation (`SystemMaxUse` on the host, typically
@@ -203,7 +237,18 @@ The user copy on the landing page promises three things; honor them:
   or after 10 min via the sweeper in `lib/job-fs.ts`.
 - **Secure:** no analytics, no content logging, no third-party network calls.
   No `console.log` of user content. `Referrer-Policy: no-referrer` set in
-  `next.config.ts`.
+  `next.config.ts`. The Python subprocess writes pikepdf/Pillow tracebacks
+  about someone's document to stderr, so the route logs its exit code but
+  withholds the tail unless an operator sets `PDF_COMP_LOG_STDERR=1` for a
+  debugging session; job paths are stripped from whatever does get logged,
+  since the path carries the jobId and the jobId is the download capability.
+
+One thing the copy does *not* promise, and shouldn't be mistaken for a bug:
+an owner-locked PDF (encrypted, empty user password — `qpdf
+--requires-password` exit 3) is accepted, and comes back **decrypted**, with
+whatever the owner password restricted. Rejecting it would refuse a document
+its owner can open by double-clicking it. See the comment in
+`lib/validate-pdf.ts`.
 - **Not indexed:** `app/robots.ts` (Disallow /), `<meta name="robots"
   content="noindex, nofollow, nocache">` via metadata in layout, and
   `X-Robots-Tag: noindex, nofollow, noarchive` HTTP header. Three independent

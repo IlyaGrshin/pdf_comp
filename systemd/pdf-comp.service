@@ -31,7 +31,13 @@ UMask=077
 # for the OS + reverse proxy.
 MemoryHigh=1400M
 MemoryMax=1700M
-MemorySwapMax=2G
+# No swap for this cgroup. The host's swapfile is there to give the OS and the
+# reverse proxy headroom, not to let one compression job page 2 GB out: a job
+# allowed to swap thrashes the whole box — nginx included — for minutes before
+# MemoryMax finally fires. With the decode bounds in scripts/recompress.py the
+# job's own peak is capped anyway, so denying swap turns a slow host-wide
+# degradation into a fast, local kill that Restart=always recovers from.
+MemorySwapMax=0
 
 # Hardening. The service only needs to write to its own tmp dir;
 # everything else is read-only.
@@ -48,6 +54,32 @@ RestrictSUIDSGID=true
 RestrictRealtime=true
 RestrictNamespaces=true
 SystemCallArchitectures=native
+ProtectKernelLogs=true
+ProtectHostname=true
+ProtectClock=true
+PrivateDevices=true
+DevicePolicy=closed
+# Hides other processes in /proc. Deliberately NOT `ProcSubset=pid`, which
+# would also hide /proc/meminfo — that file is what the per-request memory
+# pressure probe in lib/runtime-limits.ts reads, and it fails soft, so the
+# check would silently stop working rather than complain.
+ProtectProc=invisible
+# The service runs as a plain user and needs no capability at all; an empty
+# bounding set means a parser exploit cannot pick one up.
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+# The process parses untrusted PDFs through qpdf/pikepdf/Pillow and never makes
+# an outbound connection of its own — next/font fetches at build time, on the
+# build machine. Denying everything but loopback leaves nginx able to reach us
+# while removing the exfiltration path a parser RCE would otherwise have.
+# (Needs systemd BPF firewalling; where it is unavailable systemd logs a
+# warning and the unit still starts.)
+IPAddressDeny=any
+IPAddressAllow=localhost
+# No MemoryDenyWriteExecute — V8 JITs, and the unit would not start.
 
 [Install]
 WantedBy=multi-user.target
