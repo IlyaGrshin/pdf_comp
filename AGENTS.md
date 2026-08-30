@@ -162,7 +162,12 @@ Admission is gated **before** the body is written to disk, on two counters:
   `JOB_DISK_RESERVE_BYTES` (input at the cap plus `final.pdf` beside it)
   synchronously, before the request awaits anything — a bare budget check is
   a snapshot, and every slot admitted against the same snapshot would then
-  write its worst case on top of it. Override with `MAX_DISK_BYTES`.
+  write its worst case on top of it. The outstanding total is captured at
+  admission for the same reason the reserve is charged there: the walk is
+  async, so reading the live counter after it would sample the two halves at
+  different moments, and a job finishing mid-walk could drop its reservation
+  after the walk passed its directory without seeing `final.pdf`. Fixed at
+  admission, the two can only overlap. Override with `MAX_DISK_BYTES`.
 
 `MAX_RAM_BYTES` env var overrides the autotune (useful when Node's container
 memory detection misreports).

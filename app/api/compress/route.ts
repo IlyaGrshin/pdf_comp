@@ -42,16 +42,32 @@ function err(code: ErrorCode, status: number, init?: ResponseInit): Response {
 let inflightJobs = 0;
 let reservedBytes = 0;
 
-function acquireJobSlot(): (() => void) | null {
+type JobSlot = {
+  // Outstanding reservations at the instant this slot was taken, this one
+  // included. The budget check runs after `await tmpBytes()`, and reading the
+  // live counter there would sample the two halves of the accounting at
+  // different moments: a job that finishes mid-scan can drop its reservation
+  // after the walk has already passed its directory without seeing final.pdf,
+  // and neither its output nor its claim would be counted. Fixed at admission
+  // the two can only overlap, never fall through the gap — bytes may be
+  // counted twice, which refuses work rather than overrunning.
+  reservedAtAdmission: number;
+  release: () => void;
+};
+
+function acquireJobSlot(): JobSlot | null {
   if (inflightJobs >= MAX_INFLIGHT_JOBS) return null;
   inflightJobs += 1;
   reservedBytes += JOB_DISK_RESERVE_BYTES;
   let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    inflightJobs -= 1;
-    reservedBytes -= JOB_DISK_RESERVE_BYTES;
+  return {
+    reservedAtAdmission: reservedBytes,
+    release: () => {
+      if (released) return;
+      released = true;
+      inflightJobs -= 1;
+      reservedBytes -= JOB_DISK_RESERVE_BYTES;
+    },
   };
 }
 
@@ -77,10 +93,11 @@ export async function POST(req: Request) {
     }
 
     // Same idea one resource over: finished jobs awaiting download hold disk
-    // that no in-flight counter sees. Bytes already written by a live job are
-    // counted twice — once here, once in its reservation — which errs toward
-    // refusing work rather than overrunning the budget.
-    if ((await tmpBytes()) + reservedBytes > DISK_BUDGET_BYTES) {
+    // that no in-flight counter sees. A request admitted after this one is not
+    // in `reservedAtAdmission`, but its own check is, so the last slot admitted
+    // always sees every earlier claim — which is what keeps the admitted set
+    // inside the budget rather than each request individually.
+    if ((await tmpBytes()) + slot.reservedAtAdmission > DISK_BUDGET_BYTES) {
       return err("BUSY", 503, { headers: { "retry-after": "60" } });
     }
 
@@ -90,7 +107,7 @@ export async function POST(req: Request) {
 
     return await runJob(req.body);
   } finally {
-    slot();
+    slot.release();
   }
 }
 
