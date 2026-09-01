@@ -48,6 +48,50 @@ streamed download  →  job dir deleted on close
   different grid → visible block tearing on transparency edges at zoom.
 - **pikepdf is NOT thread-safe for writes.** Only the pure-CPU phase
   (decode → resize → encode) runs in workers. Object writes stay on main.
+- **Nothing is decoded before its size is known to be bounded.** The decode
+  allocates from the image's declared dimensions, and Pillow's own
+  `MAX_IMAGE_PIXELS` bomb guard does not fire on `Image.frombuffer`, the path
+  pikepdf takes for non-JPEG images. A 1.1 MB PDF declaring one 20000×20000
+  Flate image drove peak RSS to 2701 MB with every other bound in place.
+  `MAX_DECODE_PIXELS` is checked twice — against the object dict before the
+  decode, and against the decoder's own dimensions after (a JPEG carries its
+  size in the SOF marker, so the dict can understate it). Oversized images pass
+  through untouched, never corrupted, and are counted as `skipped_oversized`.
+- **Both encoders stream; neither materialises a second full-size buffer.**
+  `encode_jpeg` hands cjpeg a temp file via `pil.save(tf, format="PPM")`.
+  Building the PNM by hand as `header + pil.tobytes()` kept the bitmap, the
+  `tobytes()` result and the concatenation alive together — about 9 bytes per
+  pixel where the caller reserved 6, and 9 against 4 for a palette image.
+  Sixty 2400x1800 images at eight workers peaked at 389 MB (494 MB palette)
+  against a 256 MB budget. Pillow's PPM output is byte-identical to the
+  hand-built header plus `tobytes()` for both P5 and P6, verified against
+  cjpeg. Any future change here must keep the encoder fed without a full-size
+  intermediate, or `_bitmap_bytes` stops being a bound.
+- **The oversize cap applies to an image and its soft mask as a pair.**
+  `/SMask` is a separate Image XObject, so capping each stream independently
+  can skip a colour image while its mask still goes through the resize path:
+  a 7000x6000 image with a 4000x3000 mask came back as 7000x6000 colour and a
+  2400x1800 mask, alpha quantized on a different grid than the pixels it
+  masks. `_pair_oversized` checks both directions, and two details it has to
+  get right: the reverse map keeps the *largest* image each mask is attached
+  to, because one `/SMask` stream may be shared by several XObjects and the
+  mask must be skipped if any of them is over the cap; and the check runs
+  **before** the raw-hash alias fast-path, because aliasing merges streams by
+  their bytes alone — two byte-identical masks can hang off differently sized
+  images, and the second would otherwise inherit the first one's resized bytes
+  while its own oversized image stayed untouched. Keeping oversized streams
+  out of `seen_raw` entirely is what makes an alias group uniformly
+  processable; they still dedup through `untouched_first`. The post-decode
+  backstop cannot pair — establishing the partner's true size means decoding
+  it — and only fires on files whose dict understates their own images.
+- **The in-flight budget counts the copies, not just the source.** A work item
+  peaks at the source bitmap *plus* one full-size copy — the converted image
+  while `convert()` still holds the original, or the buffer `tobytes()` builds
+  for the encoder. Budgeting the source alone under-counts palette images
+  threefold: mode `P` is one byte per pixel right up until the worker turns it
+  into three-byte RGB. `_resize_and_encode` must `pop` the source out of the
+  work dict, not read it — keeping the dict entry alive pins the original
+  next to every copy and doubles what was budgeted.
 - **Don't add `/sRGB` even "for testing".** It's a known footgun.
 - **The upload is a raw body, never `multipart/form-data`.** `req.formData()`
   materialises the whole part in memory before returning a `File`: measured
@@ -102,6 +146,28 @@ at startup and computes:
 returns `503 BUSY` if the host is memory-tight (Linux only; macOS skips the
 check because `os.freemem()` under-reports by an order of magnitude — it
 omits reclaimable cache).
+
+Admission is gated **before** the body is written to disk, on two counters:
+
+- `MAX_INFLIGHT_JOBS` (= `concurrency + 1`) — a slot is held for the whole
+  request, upload included. Gating on the `pLimit` counters alone did not
+  bound anything: `activeCount` does not rise until the upload is fully on
+  disk, so any number of requests passed the check at once and every one of
+  them wrote up to `maxBytes` first.
+- `DISK_BUDGET_BYTES` — total bytes under `tmp/`, walked per request, plus
+  what admitted jobs have reserved. A concurrency cap does not bound the disk
+  on its own: a finished job stays downloadable for the promised 10 minutes,
+  so a client that uploads and never downloads parks `maxBytes` per request
+  while staying inside every other limit. Each admitted job charges
+  `JOB_DISK_RESERVE_BYTES` (input at the cap plus `final.pdf` beside it)
+  synchronously, before the request awaits anything — a bare budget check is
+  a snapshot, and every slot admitted against the same snapshot would then
+  write its worst case on top of it. The outstanding total is captured at
+  admission for the same reason the reserve is charged there: the walk is
+  async, so reading the live counter after it would sample the two halves at
+  different moments, and a job finishing mid-walk could drop its reservation
+  after the walk passed its directory without seeing `final.pdf`. Fixed at
+  admission, the two can only overlap. Override with `MAX_DISK_BYTES`.
 
 `MAX_RAM_BYTES` env var overrides the autotune (useful when Node's container
 memory detection misreports).
@@ -186,6 +252,10 @@ Four layers, no monitoring required:
 2. systemd cgroup limits (`MemoryHigh=1400M` throttles/reclaims before
    `MemoryMax=1700M` OOM-kills). Python is usually the target; Node
    sees `SubprocessError`, returns 500 to the user, service stays up.
+   `MemorySwapMax=0` — the host swapfile exists for the OS and the reverse
+   proxy, not for a compression job. A job allowed to swap thrashes the whole
+   box for minutes before `MemoryMax` fires; denying it turns a host-wide
+   degradation into a fast local kill.
 3. `Restart=always` in the unit — covers the rare case where the OOM
    target is Node itself.
 4. journald default rotation (`SystemMaxUse` on the host, typically
@@ -203,7 +273,18 @@ The user copy on the landing page promises three things; honor them:
   or after 10 min via the sweeper in `lib/job-fs.ts`.
 - **Secure:** no analytics, no content logging, no third-party network calls.
   No `console.log` of user content. `Referrer-Policy: no-referrer` set in
-  `next.config.ts`.
+  `next.config.ts`. The Python subprocess writes pikepdf/Pillow tracebacks
+  about someone's document to stderr, so the route logs its exit code but
+  withholds the tail unless an operator sets `PDF_COMP_LOG_STDERR=1` for a
+  debugging session; job paths are stripped from whatever does get logged,
+  since the path carries the jobId and the jobId is the download capability.
+
+One thing the copy does *not* promise, and shouldn't be mistaken for a bug:
+an owner-locked PDF (encrypted, empty user password — `qpdf
+--requires-password` exit 3) is accepted, and comes back **decrypted**, with
+whatever the owner password restricted. Rejecting it would refuse a document
+its owner can open by double-clicking it. See the comment in
+`lib/validate-pdf.ts`.
 - **Not indexed:** `app/robots.ts` (Disallow /), `<meta name="robots"
   content="noindex, nofollow, nocache">` via metadata in layout, and
   `X-Robots-Tag: noindex, nofollow, noarchive` HTTP header. Three independent

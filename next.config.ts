@@ -29,9 +29,6 @@ const nextConfig: NextConfig = {
     // build; matters on the 2 GB Alwyzon host where the build step
     // was the tightest moment.
     webpackMemoryOptimizations: true,
-    serverActions: {
-      bodySizeLimit: "1100mb",
-    },
   },
   async headers() {
     const isProd = process.env.NODE_ENV === "production";

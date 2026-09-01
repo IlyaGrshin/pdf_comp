@@ -54,6 +54,35 @@ function compute() {
 
 export const LIMITS = compute();
 
+// A request holds a slot from the moment it starts writing to disk until the
+// job is finished or deleted. The old gate counted only compressions, and it
+// counted them before the upload — `activeCount` does not rise until the body
+// is fully on disk, so any number of requests passed it simultaneously and
+// every one of them wrote up to `maxBytes` first. Slots are `concurrency + 1`
+// to keep the previous intent: one job compressing, one queued behind it.
+export const MAX_INFLIGHT_JOBS = LIMITS.concurrency + 1;
+
+// Worst case one live job puts on disk: the upload at the cap, plus final.pdf
+// written beside it before the no-benefit check can delete either. Charged at
+// admission and released when the request ends, so the budget below is a
+// ceiling rather than a snapshot that several requests can spend at once.
+export const JOB_DISK_RESERVE_BYTES = LIMITS.maxBytes * 2;
+
+// Ceiling on everything under tmp/. Concurrency alone does not bound the disk:
+// a finished job stays readable for the promised 10 minutes, so a client that
+// uploads and never downloads leaves `maxBytes` parked per request while
+// staying inside every other limit here. The default leaves half the budget
+// for in-flight reservations and half for jobs parked awaiting download.
+// Override with `MAX_DISK_BYTES`.
+export const DISK_BUDGET_BYTES = (() => {
+  const override = process.env.MAX_DISK_BYTES;
+  if (override) {
+    const n = parseInt(override, 10);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return Math.max(2 * 1024 * 1024 * 1024, MAX_INFLIGHT_JOBS * JOB_DISK_RESERVE_BYTES * 2);
+})();
+
 // Live memory probe — only meaningful on Linux where /proc/meminfo exposes
 // MemAvailable (accounts for reclaimable page cache). On other platforms
 // (macOS dev) we return null and the route skips the check — `os.freemem()`
